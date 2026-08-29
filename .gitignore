@@ -1,0 +1,9 @@
+/target
+/dist
+/node_modules
+frontend/node_modules
+frontend/dist
+*.log
+.DS_Store
+# local cargo mirror config (the container build sets it via env instead)
+/.cargo

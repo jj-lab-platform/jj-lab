@@ -1,0 +1,308 @@
+//! Integration tests for the write surface (mutation.rs): repo lifecycle,
+//! bookmark/tag ops, and content edits producing changes. All against a local
+//! bare-git remote (no network), consistent with the sync tests.
+
+use std::path::Path;
+use std::process::Command;
+use std::sync::Arc;
+
+fn run_git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .env("GIT_SSL_NO_VERIFY", "true")
+        .output()
+        .expect("spawn git");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+
+const AUTHOR: (&str, &str) = ("tester", "t@example.com");
+
+fn author() -> (String, String) {
+    (AUTHOR.0.to_string(), AUTHOR.1.to_string())
+}
+
+/// Seed an upstream repo with one commit and expose it as a bare remote.
+fn seed_remote(tmp: &Path) -> (Arc<jjlab_git::RepoStore>, Arc<jjlab_core::Db>, String) {
+    let upstream = tmp.join("upstream");
+    std::fs::create_dir_all(&upstream).unwrap();
+    run_git(&upstream, &["init", "-q"]);
+    run_git(&upstream, &["config", "user.name", "seed"]);
+    run_git(&upstream, &["config", "user.email", "s@s"]);
+    std::fs::write(upstream.join("seed.txt"), "seed\n").unwrap();
+    run_git(&upstream, &["add", "."]);
+    run_git(&upstream, &["commit", "-q", "-m", "seed"]);
+
+    let remote = tmp.join("remote.git");
+    run_git(
+        tmp,
+        &["clone", "--bare", "upstream", &remote.to_string_lossy()],
+    );
+
+    let store = Arc::new(jjlab_git::RepoStore::new(tmp.join("repos")));
+    let db = Arc::new(jjlab_core::Db::open(&tmp.join("meta.db")).unwrap());
+    let url = remote.to_string_lossy().to_string();
+    (store, db, url)
+}
+
+#[tokio::test]
+async fn repo_lifecycle_create_write_branch_tag_delete() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (store, db, _url) = seed_remote(tmp.path());
+
+    // 1. Create repo (fresh, no clone needed).
+    jjlab_git::mutation::create_repo(&store, &db, "o", "r", "main", author())
+        .await
+        .expect("create_repo");
+    assert!(store.exists("o", "r"));
+    // Duplicate create is rejected.
+    assert!(jjlab_git::mutation::create_repo(&store, &db, "o", "r", "main", author())
+        .await
+        .is_err());
+
+    // 2. Write a file → new change on main.
+    let out = jjlab_git::mutation::write_file(
+        &store, &db, "o", "r", "main", "docs/a.md", b"# hi\n", "add a", author(), None,
+    )
+    .await
+    .expect("write_file");
+    assert!(!out.sha.is_empty());
+    assert_eq!(out.change_id.len(), 32);
+
+    // Content is readable at head.
+    let bytes = jjlab_git::read::raw_at_head(&store, "o", "r", "docs/a.md")
+        .await
+        .unwrap();
+    assert_eq!(bytes, b"# hi\n");
+
+    // 3. Update produces a *new* commit + change.
+    let out2 = jjlab_git::mutation::write_file(
+        &store, &db, "o", "r", "main", "docs/a.md", b"# hi v2\n", "update a", author(), None,
+    )
+    .await
+    .unwrap();
+    assert_ne!(out.sha, out2.sha);
+    assert_ne!(out.change_id, out2.change_id);
+
+    // 4. Branch ops: create at main's tip, then delete.
+    let sha = jjlab_git::mutation::set_branch(&store, &db, "o", "r", "feature", "main")
+        .await
+        .unwrap();
+    let branches = jjlab_git::read::branches(&store, "o", "r").await.unwrap();
+    assert!(branches.iter().any(|b| b.name == "feature" && b.sha == sha));
+    jjlab_git::mutation::delete_branch(&store, &db, "o", "r", "feature")
+        .await
+        .unwrap();
+    let branches = jjlab_git::read::branches(&store, "o", "r").await.unwrap();
+    assert!(!branches.iter().any(|b| b.name == "feature"));
+
+    // 5. Tag ops.
+    let tsha = jjlab_git::mutation::set_tag(&store, &db, "o", "r", "v1", "main")
+        .await
+        .unwrap();
+    let tags = jjlab_git::read::tags(&store, "o", "r").await.unwrap();
+    assert!(tags.iter().any(|t| t.name == "v1" && t.sha == tsha));
+    jjlab_git::mutation::delete_tag(&store, &db, "o", "r", "v1")
+        .await
+        .unwrap();
+    assert!(jjlab_git::read::tags(&store, "o", "r").await.unwrap().is_empty());
+
+    // 6. Delete file → change; content 404s after.
+    jjlab_git::mutation::delete_file(&store, &db, "o", "r", "main", "docs/a.md", "rm", author())
+        .await
+        .unwrap();
+    assert!(jjlab_git::read::raw_at_head(&store, "o", "r", "docs/a.md").await.is_err());
+
+    // 7. Delete repo removes the tree.
+    jjlab_git::mutation::delete_repo(&store, "o", "r").await.unwrap();
+    assert!(!store.exists("o", "r"));
+}
+
+#[tokio::test]
+async fn write_file_to_missing_branch_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (store, db, _url) = seed_remote(tmp.path());
+    jjlab_git::mutation::create_repo(&store, &db, "o", "r", "main", author())
+        .await
+        .unwrap();
+    let err = jjlab_git::mutation::write_file(
+        &store, &db, "o", "r", "nope", "f.txt", b"x", "m", author(), None,
+    )
+    .await;
+    assert!(err.is_err(), "writing to a non-existent branch must fail");
+}
+
+#[tokio::test]
+async fn write_file_with_amend_keeps_change_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (store, db, _url) = seed_remote(tmp.path());
+    jjlab_git::mutation::create_repo(&store, &db, "o", "r", "main", author())
+        .await
+        .unwrap();
+    let first = jjlab_git::mutation::write_file(
+        &store, &db, "o", "r", "main", "f.txt", b"v1\n", "m1", author(), None,
+    )
+    .await
+    .unwrap();
+    // Amend the same change with new content: change-id must survive.
+    let amended = jjlab_git::mutation::write_file(
+        &store, &db, "o", "r", "main", "f.txt", b"v2\n", "m2", author(), Some(&first.change_id),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        first.change_id, amended.change_id,
+        "amend must keep the stable change-id"
+    );
+    assert_ne!(first.sha, amended.sha);
+}
+
+#[tokio::test]
+async fn delete_repo_missing_is_404() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (store, _db, _url) = seed_remote(tmp.path());
+    let err = jjlab_git::mutation::delete_repo(&store, "o", "ghost").await;
+    assert!(err.is_err());
+}
+
+// ── undo (ops.rs) ──
+
+#[tokio::test]
+async fn undo_rolls_back_write_file_exactly() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (store, db, _url) = seed_remote(tmp.path());
+    jjlab_git::mutation::create_repo(&store, &db, "o", "r", "main", author())
+        .await
+        .unwrap();
+    let before = jjlab_git::read::head_sha(&store, "o", "r").await.unwrap();
+
+    jjlab_git::mutation::write_file(&store, &db, "o", "r", "main", "x.txt", b"x\n", "add x", author(), None)
+        .await
+        .unwrap();
+    let after_write = jjlab_git::read::head_sha(&store, "o", "r").await.unwrap();
+    assert_ne!(before, after_write);
+
+    // Undo the last op-log entry (a project op follows the write; the undo
+    // walks back past bookkeeping to revert the write itself).
+    let ops = db.list_op_log("o/r").unwrap();
+    let last = ops.last().unwrap().id.clone();
+    let ev = jjlab_git::ops::undo_operation(&store, &db, "o", "r", &last)
+        .await
+        .expect("undo");
+    assert_eq!(ev.undo_of.as_deref(), Some(last.as_str()));
+
+    let after_undo = jjlab_git::read::head_sha(&store, "o", "r").await.unwrap();
+    assert_eq!(
+        after_undo, before,
+        "undo must restore the exact pre-write head"
+    );
+    assert!(jjlab_git::read::raw_at_head(&store, "o", "r", "x.txt")
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn undo_of_an_undo_is_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (store, db, _url) = seed_remote(tmp.path());
+    jjlab_git::mutation::create_repo(&store, &db, "o", "r", "main", author())
+        .await
+        .unwrap();
+    let ops = db.list_op_log("o/r").unwrap();
+    let last = ops.last().unwrap().id.clone();
+    let ev = jjlab_git::ops::undo_operation(&store, &db, "o", "r", &last)
+        .await
+        .expect("first undo");
+    // Undoing an undo op must be refused.
+    let err = jjlab_git::ops::undo_operation(&store, &db, "o", "r", &ev.id).await;
+    assert!(err.is_err(), "chained undo must be rejected");
+}
+
+#[tokio::test]
+async fn undo_unknown_op_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (store, db, _url) = seed_remote(tmp.path());
+    jjlab_git::mutation::create_repo(&store, &db, "o", "r", "main", author())
+        .await
+        .unwrap();
+    assert!(jjlab_git::ops::undo_operation(&store, &db, "o", "r", "does-not-exist").await.is_err());
+}
+
+// ── projection (project.rs) ──
+
+#[tokio::test]
+async fn projection_populates_bookmarks_and_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (store, db, url) = seed_remote(tmp.path());
+    jjlab_git::sync::clone_remote(&store, &db, "o", "r", &url, None)
+        .await
+        .unwrap();
+    // Clone itself projects; verify DB rows match the jj view.
+    let branches = jjlab_git::read::branches(&store, "o", "r").await.unwrap();
+    assert!(!branches.is_empty(), "clone must import at least one bookmark");
+    for b in &branches {
+        let bm = db.get_bookmark("o/r", &b.name).unwrap();
+        assert!(bm.is_some(), "bookmark {} should be projected", b.name);
+    }
+    let ids = jjlab_git::sync::list_change_ids(&store, "o", "r").await.unwrap();
+    assert!(!ids.is_empty());
+    // Every change-id row is present in changes table.
+    for cid in &ids {
+        assert!(db.get_change(cid).unwrap().is_some(), "change {cid} projected");
+    }
+}
+
+#[tokio::test]
+async fn force_push_reassociates_open_mr_head() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (store, db, url) = seed_remote(tmp.path());
+    jjlab_git::sync::clone_remote(&store, &db, "o", "r", &url, None).await.unwrap();
+
+    // Push a feature branch via the mutation path (simulates receive-pack):
+    // write a file on main, then point a branch at a rewritten tip.
+    let branches = jjlab_git::read::branches(&store, "o", "r").await.unwrap();
+    let base_name = branches.first().unwrap().name.clone();
+    let base_sha = branches.first().unwrap().sha.clone();
+    let first = jjlab_git::mutation::write_file(
+        &store, &db, "o", "r", &base_name, "f.txt", b"v1\n", "one", author(), None,
+    )
+    .await
+    .unwrap();
+    assert_ne!(first.sha, base_sha, "write must advance the base branch");
+    jjlab_git::mutation::set_branch(&store, &db, "o", "r", "feature", &first.sha)
+        .await
+        .unwrap();
+
+    // Open an MR against the feature branch (branch-name association).
+    let repo_id = "o/r";
+    let _ = db.upsert_org("o", "o");
+    let _ = db.upsert_repo(repo_id, "o", "r", "main", None);
+    let mr = db
+        .create_mr(repo_id, "t", "", "a", &first.change_id, Some(&first.sha), Some("feature"), &base_name)
+        .unwrap();
+
+    // Force-push: rewrite the tip (new change-id, same branch name) — the
+    // plain-git case where no change-id header survives.
+    let second = jjlab_git::mutation::write_file(
+        &store, &db, "o", "r", "feature", "f.txt", b"v2\n", "two", author(), None,
+    )
+    .await
+    .unwrap();
+    let _ = base_sha;
+
+    // Re-run projection: MR head must follow the branch tip.
+    jjlab_git::project::project_repo(&store, &db, "o", "r")
+        .await
+        .unwrap();
+    let updated = db.get_mr_by_number(repo_id, mr.number).unwrap().unwrap();
+    assert_eq!(
+        updated.head_sha.as_deref(),
+        Some(second.sha.as_str()),
+        "MR head must follow force-pushed branch tip"
+    );
+}

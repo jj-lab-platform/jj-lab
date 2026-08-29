@@ -1,0 +1,12 @@
+[package]
+name = "jjlab-proto"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+prost.workspace = true
+bytes.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true

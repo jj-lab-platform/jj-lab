@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package jjlab;
+
+// Signature is an author/committer identity plus timestamp.
+message Signature {
+  string name = 1;
+  string email = 2;
+  int64 timestamp_millis = 3;
+}
+
+// Change is the logical change, keyed by a stable change_id (not a git sha).
+message Change {
+  string change_id = 1;
+  string repo_id = 2;
+  string description = 3;
+  Signature author = 4;
+  Signature committer = 5;
+  repeated string parent_change_ids = 6;
+  // change_type: normal | merge | (future)
+  string change_type = 7;
+}
+
+// Bookmark is the alias label pointing at a change (branch semantics).
+message Bookmark {
+  string name = 1;
+  string change_id = 2;
+  bool is_remote = 3;
+}
+
+// Term is a single side of a first-class conflict merge value.
+message Term {
+  oneof value {
+    bytes resolved = 1;    // a resolved blob (a concrete file content)
+    Conflict conflict = 2; // a nested conflict
+  }
+}
+
+// MergeTreeValue is one slot in a first-class merge: either resolved or a
+// structured conflict. This mirrors jj's Merge<Option<TreeValue>> without
+// descending into git conflict markers.
+message MergeTreeValue {
+  oneof kind {
+    bytes resolved = 1;
+    Conflict conflict = 2;
+  }
+}
+
+// Conflict holds structured many-way terms (adds positive, removes negative).
+message Conflict {
+  repeated Term adds = 1;
+  repeated Term removes = 2;
+}
+
+// Operation is an op-log entry, the credential for cloud-side undo.
+message Operation {
+  string op_id = 1;
+  string repo_id = 2;
+  string op_type = 3;
+  bytes payload = 4;
+  string undo_of = 5;
+  int64 created_at_millis = 6;
+}
+
+// Conflict record keyed by path within a change.
+message ConflictRecord {
+  string id = 1;
+  string repo_id = 2;
+  string change_id = 3;
+  string path = 4;
+  Conflict conflict = 5;
+}

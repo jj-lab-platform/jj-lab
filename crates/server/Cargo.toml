@@ -1,0 +1,33 @@
+[package]
+name = "jjlab-server"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "jjlab"
+path = "src/main.rs"
+
+[dependencies]
+jjlab-core = { path = "../core" }
+jjlab-proto = { path = "../proto" }
+jjlab-git = { path = "../git" }
+
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+prost.workspace = true
+base64.workspace = true
+async-stream.workspace = true
+tokio-util = { version = "0.7", features = ["io"] }
+parking_lot.workspace = true
+pollster = "0.4"
+include_dir.workspace = true
+rustls.workspace = true
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

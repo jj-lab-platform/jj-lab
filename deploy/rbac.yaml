@@ -1,0 +1,44 @@
+# jjlab CI scheduler RBAC — grant the jjlab pod's ServiceAccount the right to
+# create/watch/delete sandbox pods (+ logs) inside the *runtime* namespace.
+#
+# The scheduler talks to k8s via the `kube` crate (in-cluster SA token, or
+# kubeconfig when running on a host). Sandbox pods land in `JJLAB_CI_NAMESPACE`
+# (temp in dev). This manifest must be applied to that namespace.
+#
+# NOTE (dev reality): on the dev host, jjlab is run by supervisord as a plain
+# process that uses ~/.kube/config (context `temp` / SA `temp-user`), which is
+# already bound to the pre-existing `temp-full` Role (full perms). In a real
+# k8s deployment, the pod runs with `serviceAccountName: jjlab` — use the
+# `jjlab` Role/RoleBinding below and point the Deployment at that SA.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jjlab
+  namespace: temp
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jjlab-ci
+  namespace: temp
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jjlab-ci
+  namespace: temp
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jjlab-ci
+subjects:
+  - kind: ServiceAccount
+    name: jjlab
+    namespace: temp

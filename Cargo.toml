@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/proto",
+    "crates/git",
+    "crates/server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "process", "fs"] }
+thiserror = "2"
+
+jj-lib = "=0.44.0"
+gix = { version = "=0.85.0", default-features = false }
+
+axum = { version = "0.8", features = ["macros", "multipart"] }
+prost = "0.14"
+prost-build = "0.14"
+bytes = "1"
+base64 = "0.22"
+serde_yaml = "0.9"
+async-stream = "0.3"
+tar = "0.4"
+flate2 = "1"
+futures-util = "0.3"
+include_dir = "0.7"
+sha2 = "0.10"
+hex = "0.4"
+kube = { version = "4", default-features = false, features = ["client", "config", "rustls-tls", "ring", "http-proxy"] }
+k8s-openapi = { version = "0.28", features = ["latest"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
