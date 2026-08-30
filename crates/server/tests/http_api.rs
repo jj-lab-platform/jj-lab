@@ -309,7 +309,7 @@ async fn mr_lifecycle_review_aggregation_and_head_reassociation() {
             "POST",
             "/api/v1/repos/o/r/contents/f.txt",
             Some("wtoken"),
-            obj(&[("content", "v1\n".into()), ("branch", "main".into())]),
+            obj(&[("content", "v1\n".into()), ("branch", "main".into()), ("amend", false.into())]),
         )
         .await;
     let first = TestApp::body_json(&mut resp).await;
@@ -329,7 +329,7 @@ async fn mr_lifecycle_review_aggregation_and_head_reassociation() {
             "POST",
             "/api/v1/repos/o/r/contents/f.txt",
             Some("wtoken"),
-            obj(&[("content", "v2\n".into()), ("branch", "feature".into())]),
+            obj(&[("content", "v2\n".into()), ("branch", "feature".into()), ("amend", false.into())]),
         )
         .await;
     let head = TestApp::body_json(&mut resp).await;
@@ -390,7 +390,7 @@ async fn mr_lifecycle_review_aggregation_and_head_reassociation() {
             "PUT",
             "/api/v1/repos/o/r/contents/f.txt",
             Some("wtoken"),
-            obj(&[("content", "v3\n".into()), ("branch", "feature".into()), ("message", "v3".into())]),
+            obj(&[("content", "v3\n".into()), ("branch", "feature".into()), ("message", "v3".into()), ("amend", false.into())]),
         )
         .await;
     // Projection runs inside the write; MR head must follow feature tip while
@@ -537,7 +537,7 @@ async fn seeded_app() -> TestApp {
             "POST",
             "/api/v1/repos/o/r/contents/a.txt",
             Some("wtoken"),
-            obj(&[("content", "line1\n".into()), ("branch", "main".into())]),
+            obj(&[("content", "line1\n".into()), ("branch", "main".into()), ("amend", false.into())]),
         )
         .await;
     let _ = app
@@ -545,7 +545,7 @@ async fn seeded_app() -> TestApp {
             "PUT",
             "/api/v1/repos/o/r/contents/a.txt",
             Some("wtoken"),
-            obj(&[("content", "line1\nline2\n".into()), ("branch", "main".into())]),
+            obj(&[("content", "line1\nline2\n".into()), ("branch", "main".into()), ("amend", false.into())]),
         )
         .await;
     app

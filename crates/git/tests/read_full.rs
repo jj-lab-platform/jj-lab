@@ -287,7 +287,7 @@ async fn read_blob_directory_and_missing_paths_error() {
         .unwrap();
     jjlab_git::mutation::write_file(
         &store, &db, "o", "r", "main", "nested/dir/file.txt", b"x\n", "nested",
-        ("a".into(), "a@a".into()), None,
+        ("a".into(), "a@a".into()), false,
     )
     .await
     .unwrap();

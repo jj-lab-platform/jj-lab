@@ -99,6 +99,15 @@ pub struct FileBody {
     branch: String,
     #[serde(default)]
     message: String,
+    /// Rewrite the branch head's change (stable change-id) instead of creating
+    /// a fresh change. Defaults to `true` (jj-native amend semantics).
+    #[serde(default = "default_amend")]
+    amend: bool,
+}
+
+pub 
+fn default_amend() -> bool {
+    true
 }
 
 pub 
@@ -1079,6 +1088,7 @@ pub async fn create_file(
     let db = state.db.clone();
     let author = (SERVER_AUTHOR.0.to_string(), SERVER_AUTHOR.1.to_string());
     let branch = body.branch.clone();
+    let amend = body.amend;
     match tokio::task::spawn_blocking(move || {
         pollster::block_on(jjlab_git::mutation::write_file(
             &store,
@@ -1090,7 +1100,7 @@ pub async fn create_file(
             &content,
             &message,
             author,
-            None,
+            amend,
         ))
     })
     .await
@@ -1123,6 +1133,7 @@ pub async fn update_file(
     let db = state.db.clone();
     let author = (SERVER_AUTHOR.0.to_string(), SERVER_AUTHOR.1.to_string());
     let branch = body.branch.clone();
+    let amend = body.amend;
     match tokio::task::spawn_blocking(move || {
         pollster::block_on(jjlab_git::mutation::write_file(
             &store,
@@ -1134,7 +1145,7 @@ pub async fn update_file(
             &content,
             &message,
             author,
-            None,
+            amend,
         ))
     })
     .await
@@ -1159,9 +1170,10 @@ pub async fn delete_file_handler(
     let db = state.db.clone();
     let author = (SERVER_AUTHOR.0.to_string(), SERVER_AUTHOR.1.to_string());
     let branch = body.branch.clone();
+    let amend = body.amend;
     match tokio::task::spawn_blocking(move || {
         pollster::block_on(jjlab_git::mutation::delete_file(
-            &store, &db, &org, &repo, &branch, &path, &message, author,
+            &store, &db, &org, &repo, &branch, &path, &message, author, amend,
         ))
     })
     .await

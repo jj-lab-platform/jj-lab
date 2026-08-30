@@ -198,10 +198,13 @@ pub async fn project_repo(
             let Ok(commit) = repo_arc.store().get_commit(id) else { continue };
             let change_id = commit.change_id().reverse_hex();
             let sha = commit.id().hex();
-            // Any move of the head branch (different tip than recorded)
-            // re-associates the MR head, preserving its reviews.
+            // Re-associate the MR head when the tip moved (new sha), whether
+            // by a new change or an amend of the same change.
             if mr_change_id.as_str() != change_id {
                 let _ = db.update_mr(*mr_id, None, Some(&change_id), Some(&sha));
+            } else {
+                // Same change-id (amend): only the sha moved.
+                let _ = db.update_mr(*mr_id, None, None, Some(&sha));
             }
         }
         Ok(())

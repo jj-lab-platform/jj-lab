@@ -366,11 +366,12 @@ export async function writeFile(
   path: string,
   content: string,
   message: string,
+  amend = true,
 ): Promise<{ sha: string; change_id: string }> {
   return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/contents/${path}`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ content_base64: btoa(unescape(encodeURIComponent(content))), branch, message }),
+    body: JSON.stringify({ content_base64: btoa(unescape(encodeURIComponent(content))), branch, message, amend }),
   })
 }
 
@@ -381,11 +382,12 @@ export async function createFile(
   path: string,
   content: string,
   message: string,
+  amend = true,
 ): Promise<{ sha: string; change_id: string }> {
   return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/contents/${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ content_base64: btoa(unescape(encodeURIComponent(content))), branch, message }),
+    body: JSON.stringify({ content_base64: btoa(unescape(encodeURIComponent(content))), branch, message, amend }),
   })
 }
 
@@ -395,11 +397,12 @@ export async function deleteFile(
   branch: string,
   path: string,
   message: string,
+  amend = true,
 ): Promise<{ sha: string; change_id: string }> {
   return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/contents/${path}`, {
     method: 'DELETE',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ branch, message }),
+    body: JSON.stringify({ branch, message, amend }),
   })
 }
 

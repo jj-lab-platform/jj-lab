@@ -249,6 +249,7 @@ import { themeData } from '$lib/stores/themes-data'
   let editing = $state(false)
   let editContent = $state('')
   let editMessage = $state('')
+  let editAmend = $state(true)
   let fileLog: CommitInfo[] = $state([])
   let readmeText = $state<string | null>(null)
   let readmeFailed = $state(false)
@@ -288,13 +289,14 @@ import { themeData } from '$lib/stores/themes-data'
     editing = true
     editContent = fileData?.content ?? ''
     editMessage = ''
+    editAmend = true
   }
 
   async function saveFile(): Promise<void> {
     const { org, repo } = route
     if (!org || !repo || !selectedPath) return
     try {
-      await writeFile(org, repo, branch || 'main', selectedPath, editContent, editMessage || `update ${selectedPath}`)
+      await writeFile(org, repo, branch || 'main', selectedPath, editContent, editMessage || `update ${selectedPath}`, editAmend)
       fileData = { content: editContent, encoding: 'utf-8', size: editContent.length }
       editing = false
       await Promise.all([loadTree(), loadCommits(commitPage)])
@@ -1038,6 +1040,10 @@ import { themeData } from '$lib/stores/themes-data'
                   <Textarea.Root class="h-[60vh] w-full resize-none font-mono text-xs" bind:value={editContent} />
                   <div class="mt-2 flex items-center gap-2">
                     <Input.Root class="max-w-md flex-1" placeholder="commit message" bind:value={editMessage} />
+                    <label class="flex items-center gap-1 text-[11px] g-muted">
+                      <input type="checkbox" bind:checked={editAmend} />
+                      amend head change
+                    </label>
                     <button class="g-btn tiny primary" onclick={saveFile}>Commit</button>
                   </div>
                 </div>
@@ -1279,6 +1285,9 @@ import { themeData } from '$lib/stores/themes-data'
                   <span class="shrink-0 font-mono text-[11px]" style="color:var(--primary)">{op.id.slice(0, 10)}</span>
                   <span class="shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px]" style="background:var(--gitea-light-border)">{op.op_type}</span>
                   {#if op.undo_of}<span class="shrink-0 font-mono text-[10px] g-subtle">undoes {op.undo_of.slice(0, 8)}</span>{/if}
+                  {#if (op.op_type === 'write' || op.op_type === 'delete') && (() => { try { return JSON.parse(op.payload).change_id } catch { return null } })() as string}
+                    <button class="shrink-0 font-mono text-[11px]" style="color:var(--primary)" onclick={() => { void loadChangeDetail((() => { try { return JSON.parse(op.payload).change_id } catch { return '' } })()) }}>{(() => { try { return JSON.parse(op.payload).change_id } catch { return '' } })().slice(0, 10)}</button>
+                  {/if}
                   <span class="ml-auto shrink-0">
                     {#if !op.undo_of}
                       <button class="g-btn tiny basic" onclick={() => void doUndo(op.id)}>undo</button>

@@ -11,11 +11,33 @@ use jj_lib::repo::Repo as _;
 use jj_lib::repo_path::RepoPathBuf;
 use jj_lib::tree_builder::TreeBuilder;
 
+use jjlab_core::db::OpLogRow;
 use jjlab_core::Db;
 
 use crate::project;
-use crate::read::{self, resolve_commit};
+use crate::read::resolve_commit;
 use crate::repo::{RepoError, RepoStore};
+
+/// Append a DB op_log row mirroring a just-written jj operation, so the
+/// frontend op-log is 1:1 with the jj operation log (undo addresses either).
+fn record_op(
+    db: &Db,
+    repo_id: &str,
+    op_type: &str,
+    jj_op_id: &str,
+    payload: serde_json::Value,
+) {
+    let row = OpLogRow {
+        id: jj_op_id.to_string(),
+        repo_id: repo_id.to_string(),
+        op_type: op_type.to_string(),
+        payload: payload.to_string(),
+        undo_of: None,
+    };
+    if let Err(e) = db.append_op_log(&row) {
+        tracing::warn!(repo_id, err = %e, "append op_log failed");
+    }
+}
 
 /// Create an empty repo with a README (rucoder-neo semantics).
 pub async fn create_repo(
@@ -229,15 +251,25 @@ pub async fn delete_tag(
     project::project_repo(store, db, org, repo).await
 }
 
-/// Outcome of a content edit: the new commit (git sha) and its change-id.
+/// Outcome of a content edit: the new commit (git sha), its change-id, and the
+/// jj operation id that recorded this edit (for precise op-log addressing).
 pub struct EditOutcome {
     pub sha: String,
     pub change_id: String,
+    pub op_id: String,
 }
 
-/// Write (create/update) a file at `path` on top of `branch`'s head,
-/// producing a new change. If `amend_change` is given (a change-id hex
-/// prefix), the edit rewrites that change instead of creating a new one.
+/// Write (create/update) a file at `path` on top of `branch`'s head.
+///
+/// `amend` selects the change semantics:
+///   - `amend = true` (default): rewrite the branch's head change (jj-native
+///     amend), keeping its change-id stable. The head commit is *rewritten*
+///     (its predecessor is recorded, so the change stays a single commit in
+///     visible history) rather than extended with a same-change-id child.
+///   - `amend = false`: create a fresh change on top of the head.
+///
+/// Amend only ever targets the head: a change becomes immutable once it is no
+/// longer the branch tip.
 #[allow(clippy::too_many_arguments)]
 pub async fn write_file(
     store: &Arc<RepoStore>,
@@ -249,7 +281,7 @@ pub async fn write_file(
     mut content: &[u8],
     message: &str,
     author: (String, String),
-    amend_change: Option<&str>,
+    amend: bool,
 ) -> Result<EditOutcome, RepoError> {
     jjlab_core::validate_ref_name(branch, "branch").map_err(RepoError::Other)?;
     let handle = store.open(org, repo).await?;
@@ -261,42 +293,25 @@ pub async fn write_file(
     let repo_arc = handle.repo.clone();
     let base = pollster::block_on(async { resolve_commit(&repo_arc, branch) })?;
 
-    let outcome = pollster::block_on(async {
+    let (outcome, op_id) = pollster::block_on(async {
         let mut tx = handle.repo.start_transaction();
         let outcome = {
             let mut_repo = tx.repo_mut();
             let store_ = mut_repo.store().clone();
 
-            // Parent = the head of the branch (or the amended change itself).
-            let (parent_id, change_id) = match amend_change {
-                Some(cid) => {
-                    let amended = read::resolve_change(&repo_arc, cid)?;
-                    let amended_commit = repo_arc
-                        .store()
-                        .get_commit(&amended)
-                        .map_err(|e| RepoError::Other(e.to_string()))?;
-                    let cid = amended_commit.change_id().clone();
-                    (amended.clone(), Some(cid))
-                }
-                None => (base.clone(), None),
-            };
+            // Start from the head's root tree and set the single path.
             let parent = mut_repo
                 .store()
-                .get_commit(&parent_id)
+                .get_commit(&base)
                 .map_err(|e| RepoError::Other(e.to_string()))?;
-
-            // Rebuild the tree with the file updated.
             let file_id = store_
                 .write_file(&RepoPathBuf::root(), &mut content)
                 .await
                 .map_err(|e| RepoError::Other(format!("write file: {e}")))?;
             let repo_path = RepoPathBuf::from_internal_string(path)
                 .map_err(|e| RepoError::Other(format!("bad path {path:?}: {e}")))?;
-
-            // Start from the parent's root tree and set the single path.
             let tree = parent.tree();
             let mut builder = TreeBuilder::new(store_.clone(), store_.empty_tree_id().clone());
-            // Materialize the existing tree into the builder by walking it.
             collect_tree(&tree, "", &mut builder).await?;
             builder.set(
                 repo_path,
@@ -312,36 +327,76 @@ pub async fn write_file(
                 .map_err(|e| RepoError::Other(format!("write tree: {e}")))?;
             let merged = jj_lib::merged_tree::MergedTree::resolved(store_, tree_id);
 
-            let mut builder = mut_repo.new_commit(vec![parent_id], merged);
-            builder = builder
-                .set_description(message.to_string())
-                .set_author(signature.clone())
-                .set_committer(signature.clone());
-            if let Some(cid) = change_id {
-                builder = builder.set_change_id(cid);
-            }
-            let commit = builder
-                .write()
-                .await
-                .map_err(|e| RepoError::Other(format!("write commit: {e}")))?;
-
-            // Move the branch to the new commit.
-            let target: jj_lib::ref_name::RefNameBuf = branch.to_string().into();
-            mut_repo.set_local_bookmark_target(
-                &target,
-                jj_lib::op_store::RefTarget::normal(commit.id().clone()),
-            );
+            // Amend = rewrite the head commit (change stays immutable: one
+            // commit per change in visible history). A root/empty head has no
+            // predecessor to rewrite, so fall back to a fresh change.
+            let can_amend = amend && base != mut_repo.store().root_commit_id().clone();
+            let commit = if can_amend {
+                let mut builder = mut_repo.rewrite_commit(&parent);
+                builder = builder
+                    .set_tree(merged)
+                    .set_description(message.to_string());
+                let commit = builder
+                    .write()
+                    .await
+                    .map_err(|e| RepoError::Other(format!("rewrite commit: {e}")))?;
+                // rebase_descendants rewrites any descendants of the old head
+                // and moves bookmarks pointing at it onto the new commit.
+                mut_repo
+                    .rebase_descendants()
+                    .await
+                    .map_err(|e| RepoError::Other(format!("rebase descendants: {e}")))?;
+                commit
+            } else {
+                let mut builder = mut_repo.new_commit(vec![base.clone()], merged);
+                builder = builder
+                    .set_description(message.to_string())
+                    .set_author(signature.clone())
+                    .set_committer(signature.clone());
+                let commit = builder
+                    .write()
+                    .await
+                    .map_err(|e| RepoError::Other(format!("write commit: {e}")))?;
+                let target: jj_lib::ref_name::RefNameBuf = branch.to_string().into();
+                mut_repo.set_local_bookmark_target(
+                    &target,
+                    jj_lib::op_store::RefTarget::normal(commit.id().clone()),
+                );
+                commit
+            };
 
             EditOutcome {
                 sha: commit.id().hex(),
                 change_id: commit.change_id().reverse_hex(),
+                op_id: String::new(),
             }
         };
-        tx.commit("jjlab: write file")
+        let committed = tx
+            .commit("jjlab: write file")
             .await
             .map_err(|e| RepoError::Other(e.to_string()))?;
-        Ok::<EditOutcome, RepoError>(outcome)
+        let op_id = committed.operation().id().hex();
+        Ok::<(EditOutcome, String), RepoError>((outcome, op_id))
     })?;
+
+    let mut outcome = outcome;
+    outcome.op_id = op_id.clone();
+    record_op(
+        db,
+        &format!("{org}/{repo}"),
+        "write",
+        &op_id,
+        serde_json::json!({
+            "jj_op_id": op_id,
+            "path": path,
+            "branch": branch,
+            "sha": outcome.sha,
+            "change_id": outcome.change_id,
+            "amend": amend,
+            "message": message,
+        }),
+    );
+
     project::project_repo(store, db, org, repo).await?;
     // Writing a workflow file syncs it and (per push semantics) enqueues runs.
     if path.starts_with(".github/workflows/") || path == ".jjlab-ci.yml" {
@@ -357,7 +412,9 @@ pub async fn write_file(
     Ok(outcome)
 }
 
-/// Delete a file at `path` on top of `branch`, producing a new change.
+/// Delete a file at `path` on top of `branch`. `amend` selects whether to
+/// rewrite the branch's head change (`true`, stable change-id) or create a
+/// fresh change (`false`). Amend only ever targets the head.
 #[allow(clippy::too_many_arguments)]
 pub async fn delete_file(
     store: &Arc<RepoStore>,
@@ -368,6 +425,7 @@ pub async fn delete_file(
     path: &str,
     message: &str,
     author: (String, String),
+    amend: bool,
 ) -> Result<EditOutcome, RepoError> {
     jjlab_core::validate_ref_name(branch, "branch").map_err(RepoError::Other)?;
     let handle = store.open(org, repo).await?;
@@ -379,7 +437,7 @@ pub async fn delete_file(
     let repo_arc = handle.repo.clone();
     let base = pollster::block_on(async { resolve_commit(&repo_arc, branch) })?;
 
-    let outcome = pollster::block_on(async {
+    let (outcome, op_id) = pollster::block_on(async {
         let mut tx = handle.repo.start_transaction();
         let outcome = {
             let mut_repo = tx.repo_mut();
@@ -401,31 +459,70 @@ pub async fn delete_file(
                 .map_err(|e| RepoError::Other(format!("write tree: {e}")))?;
             let merged = jj_lib::merged_tree::MergedTree::resolved(store_, tree_id);
 
-            let commit = mut_repo
-                .new_commit(vec![base.clone()], merged)
-                .set_description(message.to_string())
-                .set_author(signature.clone())
-                .set_committer(signature.clone())
-                .write()
-                .await
-                .map_err(|e| RepoError::Other(format!("write commit: {e}")))?;
-
-            let target: jj_lib::ref_name::RefNameBuf = branch.to_string().into();
-            mut_repo.set_local_bookmark_target(
-                &target,
-                jj_lib::op_store::RefTarget::normal(commit.id().clone()),
-            );
+            let can_amend = amend && base != mut_repo.store().root_commit_id().clone();
+            let commit = if can_amend {
+                let mut builder = mut_repo.rewrite_commit(&parent);
+                builder = builder
+                    .set_tree(merged)
+                    .set_description(message.to_string());
+                let commit = builder
+                    .write()
+                    .await
+                    .map_err(|e| RepoError::Other(format!("rewrite commit: {e}")))?;
+                mut_repo
+                    .rebase_descendants()
+                    .await
+                    .map_err(|e| RepoError::Other(format!("rebase descendants: {e}")))?;
+                commit
+            } else {
+                let commit = mut_repo
+                    .new_commit(vec![base.clone()], merged)
+                    .set_description(message.to_string())
+                    .set_author(signature.clone())
+                    .set_committer(signature.clone())
+                    .write()
+                    .await
+                    .map_err(|e| RepoError::Other(format!("write commit: {e}")))?;
+                let target: jj_lib::ref_name::RefNameBuf = branch.to_string().into();
+                mut_repo.set_local_bookmark_target(
+                    &target,
+                    jj_lib::op_store::RefTarget::normal(commit.id().clone()),
+                );
+                commit
+            };
 
             EditOutcome {
                 sha: commit.id().hex(),
                 change_id: commit.change_id().reverse_hex(),
+                op_id: String::new(),
             }
         };
-        tx.commit("jjlab: delete file")
+        let committed = tx
+            .commit("jjlab: delete file")
             .await
             .map_err(|e| RepoError::Other(e.to_string()))?;
-        Ok::<EditOutcome, RepoError>(outcome)
+        let op_id = committed.operation().id().hex();
+        Ok::<(EditOutcome, String), RepoError>((outcome, op_id))
     })?;
+
+    let mut outcome = outcome;
+    outcome.op_id = op_id.clone();
+    record_op(
+        db,
+        &format!("{org}/{repo}"),
+        "delete",
+        &op_id,
+        serde_json::json!({
+            "jj_op_id": op_id,
+            "path": path,
+            "branch": branch,
+            "sha": outcome.sha,
+            "change_id": outcome.change_id,
+            "amend": amend,
+            "message": message,
+        }),
+    );
+
     project::project_repo(store, db, org, repo).await?;
     Ok(outcome)
 }

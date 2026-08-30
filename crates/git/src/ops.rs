@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use jj_lib::op_store::OperationId;
+use jj_lib::repo::Repo as _;
 
 use jjlab_core::db::{OpLogRow, MrRow};
 use jjlab_core::Db;
@@ -61,12 +62,13 @@ pub fn ops_since(db: &Db, repo_id: &str, after_id: &str) -> Vec<OpEvent> {
     rows.into_iter().skip(start).map(event_from_row).collect()
 }
 
-/// Undo the operation identified by `op_id` (a rowid-like id string in our
-/// op_log): reset the repo to the previous operation head.
+/// Undo the operation identified by `op_id`. For content edits the op_log row
+/// carries the authoritative jj operation id (`payload.jj_op_id`), so undo
+/// rolls back to exactly that operation's parent. Otherwise it falls back to
+/// the previous "walk past bookkeeping" behavior.
 ///
-/// Implementation: read the current op head, load it, walk to its first
-/// parent operation, load the repo at that operation, then persist that
-/// operation as the new head (via a transaction that writes the old view).
+/// Implementation: load the repo at the target operation's first parent and
+/// re-point the op head there (a transaction that publishes the parent view).
 pub async fn undo_operation(
     store: &Arc<RepoStore>,
     db: &Db,
@@ -87,6 +89,14 @@ pub async fn undo_operation(
         return Err(RepoError::Other("operation is already an undo".into()));
     }
 
+    // Authoritative jj op id recorded by content edits.
+    let jj_op_id: Option<OperationId> = target
+        .payload
+        .parse::<serde_json::Value>()
+        .ok()
+        .and_then(|v| v.get("jj_op_id").and_then(|s| s.as_str()).map(str::to_string))
+        .and_then(|hex| OperationId::try_from_hex(&hex));
+
     let handle = store.open(org, repo).await?;
     let repo_arc = handle.repo.clone();
 
@@ -99,6 +109,31 @@ pub async fn undo_operation(
         let mut parent_op = None;
         let mut cursor = current_op.clone();
         for _ in 0..64 {
+            // Precise path: if the target op id is recorded, revert to its
+            // first parent (exact rollback of that edit).
+            if let Some(ref target_id) = jj_op_id {
+                let parent_ids = repo_arc
+                    .op_store()
+                    .read_operation(target_id)
+                    .await
+                    .map_err(|e| RepoError::Other(format!("read op {target_id}: {e}")))?
+                    .parents;
+                let Some(pid) = parent_ids.into_iter().next() else {
+                    return Err(RepoError::Other("operation has no parents".into()));
+                };
+                let parent_data = repo_arc
+                    .op_store()
+                    .read_operation(&pid)
+                    .await
+                    .map_err(|e| RepoError::Other(format!("read op parent {pid}: {e}")))?;
+                parent_op = Some(jj_lib::operation::Operation::new(
+                    repo_arc.op_store().clone(),
+                    pid,
+                    parent_data,
+                ));
+                break;
+            }
+
             let parents = cursor
                 .parents()
                 .await
