@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jj-lab.fullname" . }}
+  labels:
+    {{- include "jj-lab.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "jj-lab.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "jj-lab.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: jjlab
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: HTTP_PROXY
+              value: {{ .Values.httpProxy | quote }}
+            - name: HTTPS_PROXY
+              value: {{ .Values.httpProxy | quote }}
+            - name: NO_PROXY
+              value: {{ .Values.noProxy | quote }}
+            - name: JJLAB_PORT
+              value: "8080"
+            - name: JJLAB_DB
+              value: {{ printf "%s/data.db" .Values.dataDir | quote }}
+            - name: JJLAB_REPOS
+              value: {{ printf "%s/repos" .Values.dataDir | quote }}
+            - name: JJLAB_ASSETS
+              value: {{ printf "%s/assets" .Values.dataDir | quote }}
+            - name: JJLAB_LOGS
+              value: {{ printf "%s/logs" .Values.dataDir | quote }}
+            - name: RUST_LOG
+              value: {{ .Values.rustLog | quote }}
+            - name: JJLAB_TOKENS
+              value: {{ .Values.tokens | quote }}
+            - name: JJLAB_PKGLAB_ENABLED
+              value: {{ .Values.registry.enabled | quote }}
+            - name: JJLAB_PKGLAB_ROOT
+              value: {{ .Values.registry.root | quote }}
+            - name: JJLAB_SELF_BASE
+              value: {{ .Values.registry.selfBase | quote }}
+            - name: JJLAB_CI_ENABLED
+              value: {{ .Values.ci.enabled | quote }}
+            - name: JJLAB_CI_NAMESPACE
+              value: {{ .Values.ci.namespace | quote }}
+            - name: JJLAB_CI_IMAGE
+              value: {{ .Values.ci.image | quote }}
+            - name: JJLAB_BUILDKIT_ADDR
+              value: {{ .Values.ci.buildkitAddr | quote }}
+            - name: JJLAB_CI_JOB_TIMEOUT
+              value: {{ .Values.ci.jobTimeout | quote }}
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.dataDir }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.data }}
+          {{- toYaml .Values.persistence.data | nindent 10 }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}

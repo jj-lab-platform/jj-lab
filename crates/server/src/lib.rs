@@ -2144,14 +2144,13 @@ pub fn build_router(state: AppState) -> axum::Router {
 
     // Nest the in-process package registry (OCI + protocol routers). The
     // registry surface is more specific than the catch-all git route and the
-    // SPA fallback. Nested routers strip their prefix, so the OCI adapter's
-    // `/token` route lands at `/v2/token` and its catch-all lands at `/v2/…`.
-    // The bare `/v2` (no trailing slash) is served by the adapter's catch-all
-    // via the `fallback_service`, which axum exposes at both `/v2` and `/v2/`.
+    // SPA fallback. Use `nest_service` (not `nest`) so the adapter's explicit
+    // fallback is not registered as a competing route and cannot panic when
+    // the main router later adds its own `fallback(spa)`.
     if let Some(reg) = state.registry.as_ref() {
         if let Some(mounts) = registry::assemble(reg, &state) {
             for (prefix, sub) in mounts {
-                router = router.nest(prefix, sub);
+                router = router.nest_service(prefix, sub);
             }
         }
     }

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: jj-lab
+description: jjlab — independent k8s-native git hosting server with native CI (single static binary).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

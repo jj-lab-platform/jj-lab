@@ -1,0 +1,78 @@
+# jjlab independent chart values. Defaults target the `temp` namespace and
+# reuse the pre-existing buildkitd + artifact registry services that already
+# live there (buildkitd.temp.svc.cluster.local:1234 and the artifact OCI
+# registry). jjlab does NOT depend on the zergx chart.
+
+nameOverride: ""
+fullnameOverride: "jj-lab"
+
+# --- runtime image (built from ~/jj-lab and pushed to the temp artifact) ---
+image:
+  repository: artifact.temp.svc.cluster.local/jj-lab
+  tag: "v0.2.0"
+  pullPolicy: Always
+
+replicaCount: 1
+
+# --- service account (RBAC is applied separately via deploy/rbac.yaml) ---
+serviceAccount:
+  name: jjlab
+
+# --- HTTP server ---
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+# --- persistence (dev: emptyDir, matches the current zergx-managed jjlab) ---
+persistence:
+  data: {}
+
+# --- proxy env for the jjlab process (git/e2e net access; the scheduler
+#     forces direct k8s API access regardless, see runtime.rs) ---
+httpProxy: "http://mihomo.develop.svc.cluster.local:7890"
+noProxy: "localhost,127.0.0.1,.svc.cluster.local,.svc,.nip.io,10.199.64.20,.develop.10.199.64.20.nip.io"
+
+# --- in-cluster data/asset/log locations (emptyDir-backed in dev). jjlab keeps
+#     its sqlite db + bare repos + assets + logs all under this single dir ---
+dataDir: /data
+
+# --- rust runtime tuning ---
+rustLog: info
+
+# --- static access tokens (`token=level` comma-joined, levels read/write) ---
+#     Anonymous has read-only; write APIs + git push need a write token.
+tokens: "devtoken=write"
+
+# --- in-process package registry (pkglab: OCI + language protocols) ---
+registry:
+  enabled: true
+  # Substrate root (sqlite + CAS blobs + upstreams) lives under the data dir.
+  root: /data/pkglab
+  # External base URL used for auth challenge realms + self URLs in protocol
+  # responses (OCI token endpoint, cargo/pypi/npm self links, ...).
+  selfBase: "http://jj-lab.temp.svc.cluster.local"
+
+# --- native CI ---
+ci:
+  enabled: true
+  # Sandbox pods land here (RBAC must be present in this namespace).
+  namespace: temp
+  # Default sandbox image — resolved through the temp artifact registry (the
+  # sandbox pod cannot reach the public internet).
+  image: artifact.temp.svc.cluster.local/library/alpine:3
+  # Shared buildkitd (reused from the temp namespace, not provisioned here).
+  buildkitAddr: tcp://buildkitd.temp.svc.cluster.local:1234
+  jobTimeout: 900
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
