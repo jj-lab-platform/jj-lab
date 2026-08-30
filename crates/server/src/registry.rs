@@ -27,10 +27,7 @@ impl TokenAuth {
     }
 
     fn level_of(&self, token: &str) -> Option<Level> {
-        self.tokens
-            .iter()
-            .find(|(t, _)| t == token)
-            .map(|(_, l)| *l)
+        self.tokens.iter().find(|(t, _)| t == token).map(|(_, l)| *l)
     }
 
     fn username_for(&self, token: &str) -> Option<String> {
@@ -53,17 +50,26 @@ impl TokenAuth {
 #[async_trait::async_trait]
 impl pkglab_common::Auth for TokenAuth {
     async fn authenticate(&self, headers: &http::HeaderMap) -> String {
-        let raw = headers
-            .get(http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        // Bearer / raw token.
+        let raw =
+            headers.get(http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
+        // Bearer / token prefix.
         let bearer = raw
             .strip_prefix("Bearer ")
             .or_else(|| raw.strip_prefix("token "))
             .or_else(|| raw.strip_prefix("Token "));
         if let Some(t) = bearer {
             if let Some(u) = self.username_for(t.trim()) {
+                return u;
+            }
+        }
+        // Bare token in Authorization (cargo registry token sends `Authorization: <token>`).
+        if !raw.is_empty()
+            && !raw.starts_with("Bearer ")
+            && !raw.starts_with("token ")
+            && !raw.starts_with("Token ")
+            && !raw.starts_with("Basic ")
+        {
+            if let Some(u) = self.username_for(raw.trim()) {
                 return u;
             }
         }
@@ -78,6 +84,12 @@ impl pkglab_common::Auth for TokenAuth {
                         }
                     }
                 }
+            }
+        }
+        // X-NuGet-ApiKey (dotnet nuget push --api-key).
+        if let Some(key) = headers.get("X-NuGet-ApiKey").and_then(|v| v.to_str().ok()) {
+            if let Some(u) = self.username_for(key.trim()) {
+                return u;
             }
         }
         String::new()
@@ -126,16 +138,15 @@ pub fn assemble(
     registry: &Arc<pkglab_common::Registry>,
     state: &AppState,
 ) -> Option<Vec<(&'static str, Router)>> {
-    let auth: Option<Arc<dyn pkglab_common::Auth>> = Some(Arc::new(TokenAuth::new(state.tokens.clone())));
+    let auth: Option<Arc<dyn pkglab_common::Auth>> =
+        Some(Arc::new(TokenAuth::new(state.tokens.clone())));
 
     let base = self_base();
     let common = registry.clone();
 
     // OCI adapter (mounted at root: /v2 is spec-fixed).
-    let default_upstream = registry
-        .upstreams
-        .get("oci")
-        .unwrap_or_else(|| "https://registry-1.docker.io".to_string());
+    let default_upstream =
+        registry.upstreams.get("oci").unwrap_or_else(|| "https://registry-1.docker.io".to_string());
     let oci = pkglab_oci::router(Arc::new(pkglab_oci::OciState {
         blobs: registry.blobs.clone(),
         meta: registry.meta.clone(),

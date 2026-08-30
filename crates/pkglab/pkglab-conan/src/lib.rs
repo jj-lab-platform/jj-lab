@@ -93,11 +93,21 @@ fn strip_version(_st: &ConanState, path: &str) -> String {
         .to_string()
 }
 
-async fn authenticate() -> Response {
+async fn authenticate(State(st): State<Arc<ConanState>>, headers: HeaderMap) -> Response {
+    // Conan 2.x login flow: the client authenticates (Basic), then uses the
+    // returned raw token for subsequent uploads. Return the write token when
+    // auth is enabled so it round-trips through the caller's token store.
+    if let Some(auth) = &st.auth {
+        let identity = auth.authenticate(&headers).await;
+        if !identity.is_empty() {
+            let token = auth.issue_token(&identity, &[], 3600).await;
+            return text(StatusCode::OK, token, "text/plain");
+        }
+    }
     text(StatusCode::OK, "anonymous-token".into(), "text/plain")
 }
 
-async fn check_credentials() -> Response {
+async fn check_credentials(State(_st): State<Arc<ConanState>>) -> Response {
     json(StatusCode::OK, serde_json::json!({"ok": true}))
 }
 

@@ -9,7 +9,7 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 use pkglab_common::{Artifact, Descriptor};
 use std::io::{Cursor, Read};
 use std::sync::Arc;
@@ -61,7 +61,7 @@ pub fn router(state: Arc<SwiftState>) -> axum::Router {
     axum::Router::new()
         .route(
             "/login",
-            post(|| async { swift_json(StatusCode::OK, serde_json::json!({"token": "valid"})) }),
+            axum::routing::any(login),
         )
         .route("/identifiers", get(identifiers))
         .fallback(move |req: axum::http::Request<Body>| {
@@ -69,6 +69,20 @@ pub fn router(state: Arc<SwiftState>) -> axum::Router {
             async move { Ok::<_, std::convert::Infallible>(dispatch(st, req).await) }
         })
         .with_state(state)
+}
+
+/// SwiftPM `login` probes GET then POSTs the credential. Accept every method
+/// (SwiftPM varies by version) and return the write token when auth is
+/// enabled so it round-trips through SwiftPM's netrc store.
+async fn login(State(st): State<Arc<SwiftState>>, headers: HeaderMap) -> Response {
+    if let Some(auth) = &st.auth {
+        let identity = auth.authenticate(&headers).await;
+        if !identity.is_empty() {
+            let token = auth.issue_token(&identity, &[], 3600).await;
+            return swift_json(StatusCode::OK, serde_json::json!({"token": token}));
+        }
+    }
+    swift_json(StatusCode::OK, serde_json::json!({"token": "valid"}))
 }
 
 async fn identifiers(
@@ -111,6 +125,19 @@ async fn dispatch(state: Arc<SwiftState>, req: axum::http::Request<Body>) -> Res
         .or_else(|| path.strip_prefix("swift/"))
         .unwrap_or(&path)
         .to_string();
+
+    // SwiftPM `login` POSTs to the registry root (not /login). Route it to the
+    // login handler so `--token` round-trips.
+    if method == Method::POST && (path.is_empty() || path == "/") {
+        if let Some(auth) = &state.auth {
+            let identity = auth.authenticate(&headers).await;
+            if !identity.is_empty() {
+                let token = auth.issue_token(&identity, &[], 3600).await;
+                return swift_json(StatusCode::OK, serde_json::json!({"token": token}));
+            }
+        }
+        return swift_json(StatusCode::OK, serde_json::json!({"token": "valid"}));
+    }
 
     if method == Method::OPTIONS {
         let mut resp = StatusCode::OK.into_response();

@@ -54,21 +54,28 @@ pub fn router(state: Arc<GoState>) -> axum::Router {
             async move {
                 let method = req.method().clone();
                 let path = req.uri().path().to_string();
+                let headers = req.headers().clone();
                 let body = req.into_body();
-                Ok::<_, std::convert::Infallible>(dispatch(st, method, &path, body).await)
+                Ok::<_, std::convert::Infallible>(dispatch(st, method, &path, headers, body).await)
             }
         })
         .with_state(state)
 }
 
-async fn dispatch(state: Arc<GoState>, method: Method, path: &str, body: Body) -> Response {
+async fn dispatch(
+    state: Arc<GoState>,
+    method: Method,
+    path: &str,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
     let p = path.trim_start_matches('/');
     // Strip the mount prefix segments ("/pkgs/go/") when nested.
     let p = p.strip_prefix("pkgs/go/").or_else(|| p.strip_prefix("go/")).unwrap_or(p);
 
     if method == Method::PUT && p == "upload" {
         let query = path.split_once('?').map(|(_, q)| q.to_string());
-        return upload(State(state.clone()), axum::extract::RawQuery(query), body).await;
+        return upload(State(state.clone()), axum::extract::RawQuery(query), headers, body).await;
     }
     if method != Method::GET {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
@@ -226,16 +233,20 @@ async fn proxy_fetch(state: &GoState, path: &str) -> Result<Vec<u8>, pkglab_comm
 async fn upload_with_query(
     State(state): State<Arc<GoState>>,
     raw: axum::extract::RawQuery,
+    headers: HeaderMap,
     body: Body,
 ) -> Response {
-    upload(State(state), raw, body).await
+    upload(State(state), raw, headers, body).await
 }
 
-async fn upload(st: State<Arc<GoState>>, raw: axum::extract::RawQuery, body: Body) -> Response {
+async fn upload(
+    st: State<Arc<GoState>>,
+    raw: axum::extract::RawQuery,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
     let state = st.0;
-    if let Err(resp) =
-        pkglab_common::httphelpers::authorize_write(&state.auth, &HeaderMap::new()).await
-    {
+    if let Err(resp) = pkglab_common::httphelpers::authorize_write(&state.auth, &headers).await {
         return resp;
     }
     // Query params carry name/module + version (the Go client flow); fall
