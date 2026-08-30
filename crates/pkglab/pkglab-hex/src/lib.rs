@@ -36,7 +36,7 @@ impl HexState {
         registry: Arc<pkglab_common::Registry>,
         auth: Option<Arc<dyn pkglab_common::Auth>>,
     ) -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         match RsaPrivateKey::new(&mut rng, 2048) {
             Ok(priv_key) => {
                 let signing = SigningKey::<rsa::sha2::Sha512>::new(priv_key);
@@ -45,7 +45,6 @@ impl HexState {
                     use rsa::signature::Keypair;
                     signing
                         .verifying_key()
-                        .as_ref()
                         .to_public_key_der()
                         .map(|d| d.as_bytes().to_vec())
                         .unwrap_or_default()

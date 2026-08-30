@@ -8,7 +8,7 @@ use crate::manifest::parse_digest;
 use pkglab_common::blob::{BlobStore, UploadRecord};
 use pkglab_common::registry::{RegistryError, Result};
 use pkglab_common::store::ArtifactStore;
-use rand::RngCore;
+use rand::Rng;
 use sha2::Digest as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -44,7 +44,7 @@ impl Uploads {
 
     fn new_id() -> String {
         let mut b = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut b);
+        rand::rng().fill_bytes(&mut b);
         hex::encode(b)
     }
 

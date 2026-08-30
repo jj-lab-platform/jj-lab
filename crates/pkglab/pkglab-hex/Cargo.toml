@@ -17,12 +17,12 @@ bytes = { workspace = true }
 serde_json = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
-rsa = { version = "0.9", features = ["sha2"] }
+rsa = { version = "0.10.0-rc.18", features = ["sha2"] }
 sha1 = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
-pem-rfc7468 = "0.7"
+pem-rfc7468 = "1.0"
 tower = { workspace = true }
 [dev-dependencies]
 async-trait = { workspace = true }

@@ -8,8 +8,9 @@ use hmac::{Hmac, Mac};
 #[allow(unused_imports)]
 use pkglab_common::auth::Action as _Action;
 use pkglab_common::auth::{scope, Auth, HeaderMap};
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
+use sha2::digest::KeyInit;
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -43,7 +44,7 @@ impl DefaultAuth {
             tokens.insert(p.clone(), u.clone());
         }
         let mut key = vec![0u8; 32];
-        rand::thread_rng().fill_bytes(&mut key);
+        rand::rng().fill_bytes(&mut key);
         Self { users: hashed, tokens, signing_key: key, ttl: 3600 }
     }
 

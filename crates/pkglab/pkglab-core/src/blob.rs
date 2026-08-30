@@ -195,8 +195,8 @@ fn parse_digest(digest: &str) -> pkglab_common::blob::Result<(String, String)> {
 }
 
 fn rand_suffix() -> String {
-    use rand::Rng;
-    let n: u64 = rand::thread_rng().gen();
+    use rand::RngExt;
+    let n: u64 = rand::rng().random();
     format!("{n:x}")
 }
 
