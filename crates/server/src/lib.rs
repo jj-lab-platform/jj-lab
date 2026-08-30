@@ -5,6 +5,8 @@
 //! addressed; change-id is an extra (jj-native) addressing scheme, never a
 //! replacement for commit sha.
 
+pub mod registry;
+
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -17,12 +19,17 @@ use serde_json::{json, Value};
 
 use jjlab_core::Db;
 
+/// In-process package registry substrate (pkglab). `None` when the registry is
+/// disabled (e.g. unit tests that only exercise the git surface).
+pub type RegistryHandle = Option<Arc<pkglab_common::Registry>>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Db>,
     pub store: Arc<jjlab_git::RepoStore>,
     pub tokens: Arc<Vec<(String, Level)>>,
     pub assets: Arc<jjlab_git::assets::AssetStore>,
+    pub registry: RegistryHandle,
 }
 
 impl AppState {
@@ -32,7 +39,12 @@ impl AppState {
         tokens: Vec<(String, Level)>,
         assets: Arc<jjlab_git::assets::AssetStore>,
     ) -> Self {
-        Self { db, store, tokens: Arc::new(tokens), assets }
+        Self { db, store, tokens: Arc::new(tokens), assets, registry: None }
+    }
+
+    pub fn with_registry(mut self, registry: Arc<pkglab_common::Registry>) -> Self {
+        self.registry = Some(registry);
+        self
     }
 }
 
@@ -2001,7 +2013,7 @@ pub async fn delete_asset(
 /// Build the full application router. Tests drive this directly via
 /// `tower::ServiceExt::oneshot`; `main` serves it with `axum::serve`.
 pub fn build_router(state: AppState) -> axum::Router {
-        Router::new()
+        let mut router = Router::new()
             .route("/api/v1/health", get(health))
             .route("/api/v1/repos", get(list_orgs))
             .route("/api/v1/graph/{org}/{repo}", get(graph_handler))
@@ -2126,7 +2138,22 @@ pub fn build_router(state: AppState) -> axum::Router {
             .route("/assets/{*path}", get(spa))
             .route("/static/{*path}", get(spa))
             .with_state(state.clone())
-            .layer(axum::middleware::from_fn_with_state(state, require_write_reset))
+            .layer(axum::middleware::from_fn_with_state(state.clone(), require_write_reset))
             .layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024))
-            .fallback(spa)
+            .fallback(spa);
+
+    // Nest the in-process package registry (OCI + protocol routers). The
+    // registry surface is more specific than the catch-all git route and the
+    // SPA fallback. Nested routers strip their prefix, so the OCI adapter's
+    // `/token` route lands at `/v2/token` and its catch-all lands at `/v2/…`.
+    // The bare `/v2` (no trailing slash) is served by the adapter's catch-all
+    // via the `fallback_service`, which axum exposes at both `/v2` and `/v2/`.
+    if let Some(reg) = state.registry.as_ref() {
+        if let Some(mounts) = registry::assemble(reg, &state) {
+            for (prefix, sub) in mounts {
+                router = router.nest(prefix, sub);
+            }
+        }
+    }
+    router
 }

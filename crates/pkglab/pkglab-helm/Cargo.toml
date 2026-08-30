@@ -1,0 +1,22 @@
+[package]
+name = "pkglab-helm"
+description = "Helm chart repository protocol adapter for pkglab (index.yaml, chart download with pull-through, chart push)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pkglab-common.workspace = true
+pkglab-gateway.workspace = true
+axum = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+async-trait = { workspace = true }
+[dev-dependencies]
+tempfile = "3"

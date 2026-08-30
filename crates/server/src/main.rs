@@ -35,6 +35,33 @@ async fn main() {
     ));
     let state = AppState::new(db.clone(), store.clone(), tokens, assets);
 
+    // In-process package registry (pkglab): OCI + language protocols served
+    // by this process. Substrate lives under JJLAB_PKGLAB_ROOT (default
+    // /data/pkglab), independent of the git metadata DB.
+    let state = {
+        let root = std::env::var("JJLAB_PKGLAB_ROOT")
+            .unwrap_or_else(|_| "/data/pkglab".to_string());
+        if std::env::var("JJLAB_PKGLAB_ENABLED").map(|v| v != "0" && !v.is_empty()).unwrap_or(true) {
+            match pkglab_core::Registry::open(std::path::Path::new(&root)) {
+                Ok(reg) => {
+                    let common = Arc::new(pkglab_common::Registry::new(
+                        reg.blobs.clone(),
+                        reg.meta.clone(),
+                        reg.upstreams.clone(),
+                    ));
+                    tracing::info!(%root, "pkglab registry enabled");
+                    state.with_registry(common)
+                }
+                Err(e) => {
+                    tracing::warn!(%root, err = %e, "pkglab registry failed to open; serving without registry");
+                    state
+                }
+            }
+        } else {
+            state
+        }
+    };
+
     let app = jjlab_server::build_router(state);
 
     // Out-of-band CI scheduler: drains queued runs into k8s sandbox pods.

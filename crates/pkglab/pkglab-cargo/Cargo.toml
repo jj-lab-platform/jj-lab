@@ -1,0 +1,21 @@
+[package]
+name = "pkglab-cargo"
+description = "Cargo (crates.io) protocol adapter for pkglab: sparse index with overlay, publish binary framing, download pull-through, yank, owners"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pkglab-common.workspace = true
+pkglab-gateway.workspace = true
+axum = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tower = { workspace = true }
+async-trait = { workspace = true }
+[dev-dependencies]
+tempfile = "3"

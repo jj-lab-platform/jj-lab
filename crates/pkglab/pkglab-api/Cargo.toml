@@ -1,0 +1,36 @@
+[package]
+name = "pkglab-api"
+description = "Unified programmatic (non-HTTP) facade over every pkglab protocol adapter: publish/fetch/list/delete artifacts through one neutral surface."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pkglab-common.workspace = true
+pkglab-oci.workspace = true
+pkglab-conan.workspace = true
+pkglab-npm.workspace = true
+pkglab-pypi.workspace = true
+pkglab-cargo.workspace = true
+pkglab-go.workspace = true
+pkglab-maven.workspace = true
+pkglab-composer.workspace = true
+pkglab-nuget.workspace = true
+pkglab-rubygems.workspace = true
+pkglab-hex.workspace = true
+pkglab-pub.workspace = true
+pkglab-swift.workspace = true
+pkglab-helm.workspace = true
+pkglab-generic.workspace = true
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+pkglab-core.workspace = true
+tokio = { version = "1", features = ["full"] }
+tower = { workspace = true }
+http-body-util = { workspace = true }
+axum = { workspace = true }
+tempfile = "3"

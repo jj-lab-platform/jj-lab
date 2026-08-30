@@ -1,0 +1,13 @@
+[package]
+name = "pkglab-gateway"
+description = "Adapter trait and axum router builder for assembling pkglab protocol crates into one HTTP surface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+tracing = { workspace = true }

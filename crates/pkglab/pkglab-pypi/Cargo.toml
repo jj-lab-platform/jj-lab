@@ -1,0 +1,22 @@
+[package]
+name = "pkglab-pypi"
+description = "PyPI (PEP 503/691/658) protocol adapter for pkglab: simple index HTML+JSON, metadata sidecars, multipart upload, pull-through with href rewriting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pkglab-common.workspace = true
+pkglab-gateway.workspace = true
+axum = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+zip.workspace = true
+url = { workspace = true }
+tower = { workspace = true }
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,28 @@
+[package]
+name = "pkglab-oci"
+description = "OCI Distribution Spec v1.1 registry protocol adapter for pkglab (push/pull, chunked uploads, referrers, pull-through proxy)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pkglab-common.workspace = true
+pkglab-gateway.workspace = true
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+tracing = { workspace = true }
+tokio-stream = "0.1"
+url = { workspace = true }
+percent-encoding = { workspace = true }

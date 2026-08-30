@@ -1,0 +1,21 @@
+[package]
+name = "pkglab-swift"
+description = "Swift Package Registry (SE-0321) protocol adapter for pkglab: releases, source archives, Package.swift, publish, SCM-to-registry git cache, pull-through"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pkglab-common.workspace = true
+pkglab-gateway.workspace = true
+axum = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+zip.workspace = true
+tower = { workspace = true }
+[dev-dependencies]
+tempfile = "3"

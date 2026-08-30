@@ -1,0 +1,29 @@
+[package]
+name = "pkglab-hex"
+description = "Hex.pm (Elixir) protocol adapter for pkglab: signed-gzip protobuf registry responses (RSA-PKCS1v15-SHA512), tarballs, publish, install CSV pass-through"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pkglab-common.workspace = true
+pkglab-gateway.workspace = true
+tokio = { workspace = true }
+axum = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+serde_json = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+rsa = { version = "0.9", features = ["sha2"] }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+pem-rfc7468 = "0.7"
+tower = { workspace = true }
+[dev-dependencies]
+async-trait = { workspace = true }
+tempfile = "3"

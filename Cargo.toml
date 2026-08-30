@@ -5,39 +5,107 @@ members = [
     "crates/proto",
     "crates/git",
     "crates/server",
+    "crates/pkglab/pkglab-common",
+    "crates/pkglab/pkglab-core",
+    "crates/pkglab/pkglab-gateway",
+    "crates/pkglab/pkglab-api",
+    "crates/pkglab/pkglab-oci",
+    "crates/pkglab/pkglab-generic",
+    "crates/pkglab/pkglab-helm",
+    "crates/pkglab/pkglab-go",
+    "crates/pkglab/pkglab-maven",
+    "crates/pkglab/pkglab-pypi",
+    "crates/pkglab/pkglab-composer",
+    "crates/pkglab/pkglab-npm",
+    "crates/pkglab/pkglab-nuget",
+    "crates/pkglab/pkglab-rubygems",
+    "crates/pkglab/pkglab-pub",
+    "crates/pkglab/pkglab-hex",
+    "crates/pkglab/pkglab-cargo",
+    "crates/pkglab/pkglab-swift",
+    "crates/pkglab/pkglab-conan",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-publish = false
+license = "MIT OR Apache-2.0"
+repository = "https://forgejo.develop.10.199.64.20.nip.io/jj-lab/jj-lab"
 
 [workspace.dependencies]
+# --- pkglab internal crates ---
+pkglab-common = { path = "crates/pkglab/pkglab-common" }
+pkglab-core = { path = "crates/pkglab/pkglab-core" }
+pkglab-gateway = { path = "crates/pkglab/pkglab-gateway" }
+pkglab-api = { path = "crates/pkglab/pkglab-api" }
+pkglab-oci = { path = "crates/pkglab/pkglab-oci" }
+pkglab-generic = { path = "crates/pkglab/pkglab-generic" }
+pkglab-helm = { path = "crates/pkglab/pkglab-helm" }
+pkglab-go = { path = "crates/pkglab/pkglab-go" }
+pkglab-maven = { path = "crates/pkglab/pkglab-maven" }
+pkglab-pypi = { path = "crates/pkglab/pkglab-pypi" }
+pkglab-composer = { path = "crates/pkglab/pkglab-composer" }
+pkglab-npm = { path = "crates/pkglab/pkglab-npm" }
+pkglab-nuget = { path = "crates/pkglab/pkglab-nuget" }
+pkglab-rubygems = { path = "crates/pkglab/pkglab-rubygems" }
+pkglab-pub = { path = "crates/pkglab/pkglab-pub" }
+pkglab-hex = { path = "crates/pkglab/pkglab-hex" }
+pkglab-cargo = { path = "crates/pkglab/pkglab-cargo" }
+pkglab-swift = { path = "crates/pkglab/pkglab-swift" }
+pkglab-conan = { path = "crates/pkglab/pkglab-conan" }
+
+# --- shared ---
 parking_lot = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-rusqlite = { version = "0.40", features = ["bundled"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "process", "fs"] }
 thiserror = "2"
-
-jj-lib = "=0.44.0"
-gix = { version = "=0.85.0", default-features = false }
-
-axum = { version = "0.8", features = ["macros", "multipart"] }
-prost = "0.14"
-prost-build = "0.14"
+async-trait = "0.1"
+http = "1"
 bytes = "1"
+futures = "0.3"
+futures-util = "0.3"
+percent-encoding = "2"
+url = "2"
+semver = "1"
+hex = "0.4"
 base64 = "0.22"
-serde_yaml = "0.9"
+sha1 = "0.10"
+sha2 = "0.10"
+md-5 = "0.10"
+hmac = "0.12"
+bcrypt = "0.15"
+rand = "0.8"
 async-stream = "0.3"
 tar = "0.4"
 flate2 = "1"
-futures-util = "0.3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 include_dir = "0.7"
-sha2 = "0.10"
-hex = "0.4"
+
+# --- http / server ---
+axum = { version = "0.8", features = ["macros", "multipart"] }
+tower = "0.5"
+hyper = "1"
+http-body-util = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "stream", "multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "process", "fs", "time"] }
+
+# --- storage ---
+rusqlite = { version = "0.40", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.35"
+
+# --- git / jj ---
+jj-lib = "=0.44.0"
+gix = { version = "=0.85.0", default-features = false }
+
+# --- proto ---
+prost = "0.14"
+prost-build = "0.14"
+
+# --- k8s ---
 kube = { version = "4", default-features = false, features = ["client", "config", "rustls-tls", "ring", "http-proxy"] }
 k8s-openapi = { version = "0.28", features = ["latest"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
@@ -47,3 +115,18 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+suspicious = "warn"
+no_effect = "warn"
+type_complexity = "warn"
+bind_instead_of_map = "warn"
+map_unit_fn = "warn"
+useless_conversion = "warn"
+needless_return = "warn"
+redundant_clone = "warn"
+comparison_to_empty = "warn"
+suspicious_open_options = "warn"

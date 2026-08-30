@@ -1,0 +1,20 @@
+[package]
+name = "pkglab-maven"
+description = "Maven 2 repository protocol adapter for pkglab: layout serving, hash sidecars, maven-metadata.xml, PUT publish, pull-through"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pkglab-common.workspace = true
+pkglab-gateway.workspace = true
+axum = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+serde_json = { workspace = true }
+tower = { workspace = true }
+tracing = { workspace = true }
+[dev-dependencies]
+tempfile = "3"
