@@ -127,7 +127,10 @@ impl pkglab_common::Auth for TokenAuth {
 /// The external base URL (scheme://host[:port]) used for auth challenge
 /// realms and absolute self URLs in protocol responses.
 fn self_base() -> String {
-    std::env::var("JJLAB_SELF_BASE").unwrap_or_else(|_| "http://localhost:8080".to_string())
+    std::env::var("JJLAB_SELF_BASE")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "http://localhost:8080".to_string())
 }
 
 /// Assemble the pkglab protocol routers. Each returned entry is
@@ -144,9 +147,14 @@ pub fn assemble(
     let base = self_base();
     let common = registry.clone();
 
-    // OCI adapter (mounted at root: /v2 is spec-fixed).
-    let default_upstream =
-        registry.upstreams.get("oci").unwrap_or_else(|| "https://registry-1.docker.io".to_string());
+    // OCI adapter (mounted at root: /v2 is spec-fixed). The pull-through
+    // upstream defaults to Docker Hub unless overridden for air-gapped
+    // deployments.
+    let default_upstream = registry
+        .upstreams
+        .get("oci")
+        .or_else(|| std::env::var("JJLAB_OCI_UPSTREAM").ok())
+        .unwrap_or_else(|| "https://registry-1.docker.io".to_string());
     let oci = pkglab_oci::router(Arc::new(pkglab_oci::OciState {
         blobs: registry.blobs.clone(),
         meta: registry.meta.clone(),
