@@ -4,6 +4,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use pkglab_common::blob::BlobStore;
 use serde_json::{json, Value};
 
 fn release_json(r: &jjlab_core::db::ReleaseRow, assets: Vec<jjlab_core::db::ReleaseAssetRow>) -> Value {
@@ -162,10 +163,14 @@ pub async fn upload_asset(
         let Ok(data) = field.bytes().await else {
             return json_err(StatusCode::BAD_REQUEST, "failed to read upload".into());
         };
-        let digest = match state.assets.put(&data) {
-            Ok(d) => d,
-            Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("store asset: {e}")),
-        };
+        let digest = pkglab_common::artifact::sha256_hex(&data);
+        let full_digest = format!("sha256:{digest}");
+        {
+            let mut cursor = std::io::Cursor::new(data.as_ref());
+            if let Err(e) = state.assets.put_if_absent(&full_digest, &mut cursor).await {
+                return json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("store asset: {e}"));
+            }
+        }
         match state
             .db
             .add_release_asset(rel.id, &name, data.len() as i64, &digest, &ct)
@@ -201,12 +206,13 @@ pub async fn download_asset(
         Some(a) => a,
         None => return json_err(StatusCode::NOT_FOUND, format!("asset {name} not found")),
     };
-    let file = match state.assets.open(&asset.digest) {
-        Ok(Some(f)) => f,
+    let digest = asset.digest.clone();
+    let blob_key = format!("sha256:{digest}");
+    let stream = match state.assets.open_file(&blob_key) {
+        Ok(Some(f)) => tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(f)),
         Ok(None) => return json_err(StatusCode::NOT_FOUND, "asset blob missing".into()),
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("open blob: {e}")),
     };
-    let stream = tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(file));
     (
         StatusCode::OK,
         [

@@ -30,9 +30,15 @@ async fn main() {
     let repos_root = std::env::var("JJLAB_REPOS").unwrap_or_else(|_| "/data/repos".to_string());
     let store = Arc::new(jjlab_git::RepoStore::new(repos_root.into()));
     let tokens = parse_tokens(&std::env::var("JJLAB_TOKENS").unwrap_or_default());
-    let assets = Arc::new(jjlab_git::assets::AssetStore::new(
-        std::env::var("JJLAB_ASSETS").unwrap_or_else(|_| "/data/assets".to_string()),
-    ));
+    let assets = Arc::new(
+        pkglab_core::blob::FsBlobStore::new(
+            &std::path::PathBuf::from(
+                std::env::var("JJLAB_ASSETS").unwrap_or_else(|_| "/data/assets".to_string()),
+            )
+            .join("sha256"),
+        )
+        .expect("open asset blob store"),
+    );
     let state = AppState::new(db.clone(), store.clone(), tokens, assets);
 
     // In-process package registry (pkglab): OCI + language protocols served

@@ -29,6 +29,15 @@ impl FsBlobStore {
         // Filesystem-safe name: ':' kept (valid on unix), '/' absent in digests.
         self.root.join(digest)
     }
+
+    /// Open a blob's backing file directly (for streaming to an async sink).
+    pub fn open_file(&self, digest: &str) -> std::io::Result<Option<std::fs::File>> {
+        match std::fs::File::open(self.path(digest)) {
+            Ok(f) => Ok(Some(f)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 struct FileReader(std::fs::File);

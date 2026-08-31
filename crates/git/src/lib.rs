@@ -5,7 +5,6 @@
 
 pub mod actions;
 pub mod anchor;
-pub mod assets;
 pub mod http;
 pub mod ingest;
 pub mod mutation;

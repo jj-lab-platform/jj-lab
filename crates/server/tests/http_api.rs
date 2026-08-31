@@ -26,7 +26,9 @@ impl TestApp {
             jjlab_core::Db::open(&dir.path().join("meta.db")).unwrap(),
         );
         let store = Arc::new(jjlab_git::RepoStore::new(dir.path().join("repos")));
-        let assets = Arc::new(jjlab_git::assets::AssetStore::new(dir.path().join("assets")));
+        let assets = Arc::new(
+            pkglab_core::blob::FsBlobStore::new(&dir.path().join("assets").join("sha256")).unwrap(),
+        );
         // Point the actions log root at the tempdir (process-global env; the
         // test harness runs each test in its own process by default).
         std::env::set_var("JJLAB_LOGS", dir.path().join("logs"));

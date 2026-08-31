@@ -29,7 +29,7 @@ pub struct AppState {
     pub db: Arc<Db>,
     pub store: Arc<jjlab_git::RepoStore>,
     pub tokens: Arc<Vec<(String, Level)>>,
-    pub assets: Arc<jjlab_git::assets::AssetStore>,
+    pub assets: Arc<pkglab_core::blob::FsBlobStore>,
     pub registry: RegistryHandle,
 }
 
@@ -38,7 +38,7 @@ impl AppState {
         db: Arc<Db>,
         store: Arc<jjlab_git::RepoStore>,
         tokens: Vec<(String, Level)>,
-        assets: Arc<jjlab_git::assets::AssetStore>,
+        assets: Arc<pkglab_core::blob::FsBlobStore>,
     ) -> Self {
         Self { db, store, tokens: Arc::new(tokens), assets, registry: None }
     }
