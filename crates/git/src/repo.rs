@@ -18,6 +18,12 @@ use crate::settings;
 pub enum RepoError {
     #[error("repository {org}/{repo} not found")]
     NotFound { org: String, repo: String },
+    #[error("invalid input: {0}")]
+    Invalid(String),
+    #[error("operation conflicted: {0}")]
+    Conflict(String),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
     #[error("repository operation failed: {0}")]
     Other(String),
 }
@@ -47,8 +53,8 @@ impl RepoStore {
     /// Validate org/repo as safe path segments before any fs use. This is the
     /// single traversal boundary: every directory access funnels here.
     fn checked_repo_dir(&self, org: &str, repo: &str) -> RepoResult<PathBuf> {
-        jjlab_core::validate_segment(org, "org").map_err(RepoError::Other)?;
-        jjlab_core::validate_segment(repo, "repo").map_err(RepoError::Other)?;
+        jjlab_core::validate_segment(org, "org").map_err(RepoError::Invalid)?;
+        jjlab_core::validate_segment(repo, "repo").map_err(RepoError::Invalid)?;
         Ok(self.pubs_root.join(org).join(repo))
     }
 
@@ -122,7 +128,7 @@ impl RepoStore {
     }
 
     async fn init(&self, dir: &std::path::Path) -> RepoResult<()> {
-        std::fs::create_dir_all(dir).map_err(|e| RepoError::Other(e.to_string()))?;
+        std::fs::create_dir_all(dir)?;
         let settings =
             settings::user_settings().map_err(RepoError::Other)?;
         jj_lib::workspace::Workspace::init_internal_git(&settings, dir, gix::hash::Kind::Sha1)

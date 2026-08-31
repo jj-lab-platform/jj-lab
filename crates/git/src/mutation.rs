@@ -48,11 +48,11 @@ pub async fn create_repo(
     default_branch: &str,
     author: (String, String),
 ) -> Result<(), RepoError> {
-    jjlab_core::validate_segment(org, "org").map_err(RepoError::Other)?;
-    jjlab_core::validate_segment(repo, "repo").map_err(RepoError::Other)?;
-    jjlab_core::validate_ref_name(default_branch, "branch").map_err(RepoError::Other)?;
+    jjlab_core::validate_segment(org, "org").map_err(RepoError::Invalid)?;
+    jjlab_core::validate_segment(repo, "repo").map_err(RepoError::Invalid)?;
+    jjlab_core::validate_ref_name(default_branch, "branch").map_err(RepoError::Invalid)?;
     if store.exists(org, repo) {
-        return Err(RepoError::Other(format!("repository {org}/{repo} already exists")));
+        return Err(RepoError::Conflict(format!("repository {org}/{repo} already exists")));
     }
     db.upsert_org(org, org)
         .map_err(|e| RepoError::Other(e.to_string()))?;
@@ -140,7 +140,7 @@ pub async fn set_branch(
     name: &str,
     rev: &str,
 ) -> Result<String, RepoError> {
-    jjlab_core::validate_ref_name(name, "branch").map_err(RepoError::Other)?;
+    jjlab_core::validate_ref_name(name, "branch").map_err(RepoError::Invalid)?;
     let handle = store.open(org, repo).await?;
     let commit_id = pollster::block_on(async {
         let repo_arc = handle.repo.clone();
@@ -175,7 +175,7 @@ pub async fn delete_branch(
     repo: &str,
     name: &str,
 ) -> Result<(), RepoError> {
-    jjlab_core::validate_ref_name(name, "branch").map_err(RepoError::Other)?;
+    jjlab_core::validate_ref_name(name, "branch").map_err(RepoError::Invalid)?;
     let handle = store.open(org, repo).await?;
     pollster::block_on(async {
         let mut tx = handle.repo.start_transaction();
@@ -201,7 +201,7 @@ pub async fn set_tag(
     name: &str,
     rev: &str,
 ) -> Result<String, RepoError> {
-    jjlab_core::validate_ref_name(name, "tag").map_err(RepoError::Other)?;
+    jjlab_core::validate_ref_name(name, "tag").map_err(RepoError::Invalid)?;
     let handle = store.open(org, repo).await?;
     let commit_id = pollster::block_on(async {
         let repo_arc = handle.repo.clone();
@@ -234,7 +234,7 @@ pub async fn delete_tag(
     repo: &str,
     name: &str,
 ) -> Result<(), RepoError> {
-    jjlab_core::validate_ref_name(name, "tag").map_err(RepoError::Other)?;
+    jjlab_core::validate_ref_name(name, "tag").map_err(RepoError::Invalid)?;
     let handle = store.open(org, repo).await?;
     pollster::block_on(async {
         let mut tx = handle.repo.start_transaction();
@@ -283,7 +283,7 @@ pub async fn write_file(
     author: (String, String),
     amend: bool,
 ) -> Result<EditOutcome, RepoError> {
-    jjlab_core::validate_ref_name(branch, "branch").map_err(RepoError::Other)?;
+    jjlab_core::validate_ref_name(branch, "branch").map_err(RepoError::Invalid)?;
     let handle = store.open(org, repo).await?;
     let signature = jj_lib::backend::Signature {
         name: author.0,
@@ -427,7 +427,7 @@ pub async fn delete_file(
     author: (String, String),
     amend: bool,
 ) -> Result<EditOutcome, RepoError> {
-    jjlab_core::validate_ref_name(branch, "branch").map_err(RepoError::Other)?;
+    jjlab_core::validate_ref_name(branch, "branch").map_err(RepoError::Invalid)?;
     let handle = store.open(org, repo).await?;
     let signature = jj_lib::backend::Signature {
         name: author.0,
@@ -538,7 +538,7 @@ async fn collect_tree(
             .map_err(|e| RepoError::Other(format!("tree entry: {e}")))?;
         let resolved = value
             .into_resolved()
-            .map_err(|_| RepoError::Other("conflicted tree".to_string()))?;
+            .map_err(|_| RepoError::Conflict("conflicted tree".to_string()))?;
         let Some(entry) = resolved else { continue };
         let full = if prefix.is_empty() {
             path_buf.into_internal_string()

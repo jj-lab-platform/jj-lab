@@ -158,22 +158,22 @@ pub async fn clone_remote(
     url: &str,
     branch: Option<&str>,
 ) -> Result<String, RepoError> {
-    jjlab_core::validate_segment(org, "org").map_err(RepoError::Other)?;
-    jjlab_core::validate_segment(repo, "repo").map_err(RepoError::Other)?;
-    validate_url(url).map_err(RepoError::Other)?;
+    jjlab_core::validate_segment(org, "org").map_err(RepoError::Invalid)?;
+    jjlab_core::validate_segment(repo, "repo").map_err(RepoError::Invalid)?;
+    validate_url(url).map_err(RepoError::Invalid)?;
     let dir = store.repo_dir_checked(org, repo)?;
     if dir.exists() {
-        return Err(RepoError::Other(format!("repository {org}/{repo} already exists")));
+        return Err(RepoError::Conflict(format!("repository {org}/{repo} already exists")));
     }
-    std::fs::create_dir_all(&dir).map_err(|e| RepoError::Other(e.to_string()))?;
+    std::fs::create_dir_all(&dir)?;
 
     // Clone into a staging sibling then rename into place, so a failed clone
     // never leaves a half-initialized repo at the final path.
     let staging = dir.with_extension("clone-staging");
     if staging.exists() {
-        std::fs::remove_dir_all(&staging).map_err(|e| RepoError::Other(e.to_string()))?;
+        std::fs::remove_dir_all(&staging)?;
     }
-    std::fs::create_dir_all(&staging).map_err(|e| RepoError::Other(e.to_string()))?;
+    std::fs::create_dir_all(&staging)?;
 
     let head = {
         let mut cmd = Command::new("git");
@@ -252,7 +252,7 @@ pub async fn clone_remote(
     })?;
 
     // Promote the fully-initialized staging dir into place.
-    std::fs::rename(&staging, &dir).map_err(|e| RepoError::Other(e.to_string()))?;
+    std::fs::rename(&staging, &dir)?;
     crate::project::project_repo(store, db, org, repo).await?;
     Ok(head)
 }
@@ -268,7 +268,7 @@ pub async fn fetch_remote(
     remote: &str,
     url: &str,
 ) -> Result<usize, RepoError> {
-    validate_url(url).map_err(RepoError::Other)?;
+    validate_url(url).map_err(RepoError::Invalid)?;
     let handle = store.open(org, repo).await?;
     let settings = settings::user_settings().map_err(RepoError::Other)?;
     let remote_name: jj_lib::ref_name::RemoteNameBuf = remote.to_string().into();
@@ -332,7 +332,7 @@ pub async fn push_mirror(
     mirror_url: &str,
     secret: &str,
 ) -> Result<(), RepoError> {
-    validate_url(mirror_url).map_err(RepoError::Other)?;
+    validate_url(mirror_url).map_err(RepoError::Invalid)?;
     let push_url = embed_credentials(mirror_url, secret);
     let handle = store.open(org, repo).await?;
 

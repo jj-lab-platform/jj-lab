@@ -4,7 +4,6 @@
 //! sidecar JSON caching md5/sha1/sha256/sha512 so protocol adapters can serve
 //! checksum fields without recomputing.
 
-use crate::anyhow_free::Result;
 use async_trait::async_trait;
 use md5::Md5;
 use pkglab_common::artifact::{compute_hashes, Hashes};
@@ -21,8 +20,8 @@ pub struct FsBlobStore {
 }
 
 impl FsBlobStore {
-    pub fn new(root: &Path) -> Result<Self> {
-        std::fs::create_dir_all(root)?;
+    pub fn new(root: &Path) -> pkglab_common::registry::Result<Self> {
+        std::fs::create_dir_all(root).map_err(RegistryError::Io)?;
         Ok(Self { root: root.to_path_buf() })
     }
 
@@ -208,6 +207,6 @@ pub fn blob_digest(data: &[u8]) -> String {
 }
 
 /// Shared handle constructor.
-pub fn shared(root: &Path) -> Result<Arc<FsBlobStore>> {
+pub fn shared(root: &Path) -> pkglab_common::registry::Result<Arc<FsBlobStore>> {
     Ok(Arc::new(FsBlobStore::new(root)?))
 }

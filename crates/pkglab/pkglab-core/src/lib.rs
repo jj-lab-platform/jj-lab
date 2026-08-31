@@ -33,7 +33,7 @@ pub struct Registry {
 
 impl Registry {
     /// Open (or create) a registry rooted at `root`.
-    pub fn open(root: &Path) -> anyhow_free::Result<Arc<Registry>> {
+    pub fn open(root: &Path) -> pkglab_common::registry::Result<Arc<Registry>> {
         let blobs = Arc::new(blob::FsBlobStore::new(&root.join("blobs").join("sha256"))?);
         let meta = Arc::new(store::SqliteArtifactStore::open(&root.join("meta.sqlite"))?);
         let upstreams = pkglab_common::upstreams::Upstreams::new(Some(root.join("upstreams.json")));
@@ -44,11 +44,4 @@ impl Registry {
     pub async fn gc(&self) -> pkglab_common::registry::Result<u64> {
         gc::run(&self.meta, &self.blobs).await
     }
-}
-
-/// Tiny local error box so the crate does not depend on anyhow.
-pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
-
-pub mod anyhow_free {
-    pub type Result<T> = std::result::Result<T, crate::BoxError>;
 }

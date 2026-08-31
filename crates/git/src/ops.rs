@@ -86,7 +86,7 @@ pub async fn undo_operation(
         .find(|r| r.id == op_id)
         .ok_or_else(|| RepoError::Other(format!("op {op_id} not found")))?;
     if target.undo_of.is_some() {
-        return Err(RepoError::Other("operation is already an undo".into()));
+        return Err(RepoError::Conflict("operation is already an undo".into()));
     }
 
     // Authoritative jj op id recorded by content edits.

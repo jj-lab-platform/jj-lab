@@ -4,7 +4,6 @@
 //! artifacts keyed `(format, repository, version)` storing the serialized
 //! artifact JSON, plus repo index, upload sessions and a raw meta KV table.
 
-use crate::anyhow_free::Result;
 use async_trait::async_trait;
 use pkglab_common::registry::RegistryError;
 use pkglab_common::store::PackageSummary;
@@ -42,9 +41,9 @@ const SCHEMA: &[&str] = &[
 ];
 
 impl SqliteArtifactStore {
-    pub fn open(path: &Path) -> Result<Self> {
+    pub fn open(path: &Path) -> pkglab_common::registry::Result<Self> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+            std::fs::create_dir_all(dir).map_err(RegistryError::Io)?;
         }
         let manager = SqliteConnectionManager::file(path).with_init(|c| {
             c.execute_batch(
@@ -56,11 +55,14 @@ impl SqliteArtifactStore {
         let pool = r2d2::Pool::builder()
             .max_size(8)
             .build(manager)
-            .map_err(|e| format!("sqlite pool: {e}"))?;
+            .map_err(|e| RegistryError::Db(format!("sqlite pool: {e}")))?;
         {
-            let conn = pool.get().map_err(|e| format!("sqlite get: {e}"))?;
+            let conn = pool
+                .get()
+                .map_err(|e| RegistryError::Db(format!("sqlite get: {e}")))?;
             for stmt in SCHEMA {
-                conn.execute(stmt, []).map_err(|e| format!("schema: {e}"))?;
+                conn.execute(stmt, [])
+                    .map_err(|e| RegistryError::Db(format!("schema: {e}")))?;
             }
         }
         Ok(Self { pool })
