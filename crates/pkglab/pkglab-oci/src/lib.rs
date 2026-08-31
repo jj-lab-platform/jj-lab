@@ -476,12 +476,6 @@ async fn list_tags(adapter: &Arc<OciAdapter>, name: &str, raw: RawQuery) -> Resp
         .into_response()
 }
 
-#[allow(dead_code)]
-struct NLast {
-    n: Option<usize>,
-    last: Option<String>,
-}
-
 async fn list_referrers(
     adapter: &Arc<OciAdapter>,
     name: &str,

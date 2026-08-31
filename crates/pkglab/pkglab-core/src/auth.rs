@@ -5,8 +5,6 @@
 
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
-#[allow(unused_imports)]
-use pkglab_common::auth::Action as _Action;
 use pkglab_common::auth::{scope, Auth, HeaderMap};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -28,8 +26,6 @@ pub struct DefaultAuth {
     users: HashMap<String, String>,
     tokens: HashMap<String, String>,
     signing_key: Vec<u8>,
-    #[allow(dead_code)]
-    ttl: u64,
 }
 
 impl DefaultAuth {
@@ -45,7 +41,7 @@ impl DefaultAuth {
         }
         let mut key = vec![0u8; 32];
         rand::rng().fill_bytes(&mut key);
-        Self { users: hashed, tokens, signing_key: key, ttl: 3600 }
+        Self { users: hashed, tokens, signing_key: key }
     }
 
     pub fn with_signing_key(mut self, key: &[u8]) -> Self {

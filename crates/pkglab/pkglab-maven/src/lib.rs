@@ -23,12 +23,8 @@ pub struct MavenState {
 
 #[derive(Debug, Clone, Default)]
 struct Coords {
-    #[allow(dead_code)]
-    group_id: String,
     artifact_id: String,
     version: String,
-    #[allow(dead_code)]
-    extension: String,
 }
 
 /// Parse `group.../artifact/version/filename` into coordinates.
@@ -37,16 +33,11 @@ fn parse_maven_path(p: &str) -> Option<Coords> {
     if parts.len() < 3 {
         return None;
     }
-    let filename = parts[parts.len() - 1];
     let version = parts[parts.len() - 2];
     let artifact_id = parts[parts.len() - 3];
-    let group_id = parts[..parts.len() - 3].join(".");
-    let extension = filename.rsplit_once('.').map(|x| x.1).unwrap_or("jar");
     Some(Coords {
-        group_id,
         artifact_id: artifact_id.to_string(),
         version: version.to_string(),
-        extension: extension.to_string(),
     })
 }
 
@@ -377,7 +368,7 @@ async fn version_metadata_xml(state: &MavenState, parts: &[&str]) -> Response {
     text(StatusCode::OK, sb, "application/xml")
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn looks_like_version(s: &str) -> bool {
     if s.contains("-SNAPSHOT") {
         return true;
@@ -485,7 +476,6 @@ mod tests {
         let c = parse_maven_path("org/example/app/1.0.0/app-1.0.0.jar").unwrap();
         assert_eq!(c.artifact_id, "app");
         assert_eq!(c.version, "1.0.0");
-        assert_eq!(c.extension, "jar");
         let c = parse_maven_path("com/foo/bar-baz/2.1/bar-baz-2.1.pom").unwrap();
         assert_eq!(c.artifact_id, "bar-baz");
         assert_eq!(c.version, "2.1");

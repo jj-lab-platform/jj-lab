@@ -3,7 +3,7 @@
 //! future swap to pkglab's BlobStore trait is drop-in).
 
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use sha2::Digest as _;
 
@@ -82,8 +82,6 @@ pub fn asset_root_from_env() -> PathBuf {
     PathBuf::from(std::env::var("JJLAB_ASSETS").unwrap_or_else(|_| "/data/assets".to_string()))
 }
 
-#[allow(dead_code)]
-fn _path_use(_p: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;

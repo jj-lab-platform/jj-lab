@@ -4,7 +4,7 @@
 //! access.
 
 use pkglab_common::registry::{RegistryError, Result};
-use pkglab_common::remote::{status_error, ClientFactory};
+use pkglab_common::remote::ClientFactory;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -297,10 +297,4 @@ pub fn parse_auth_params(s: &str) -> HashMap<String, String> {
         }
     }
     out
-}
-
-/// Keep status_error referenced (used by adapters for error mapping).
-#[allow(dead_code)]
-fn _use(status: reqwest::StatusCode, path: &str) -> RegistryError {
-    status_error(path, status)
 }

@@ -213,8 +213,3 @@ pub async fn current_op_id(
     let handle = store.open(org, repo).await?;
     Ok(handle.repo.operation().id().to_string())
 }
-
-/// Unused silencer for OperationId import (kept for future op-id addressing).
-#[allow(dead_code)]
-type _OpId = OperationId;
-// NOTE: divergent op-head reconciliation

@@ -85,14 +85,6 @@ pub fn router(state: Arc<ConanState>) -> axum::Router {
         })
 }
 
-#[allow(dead_code)]
-fn strip_version(_st: &ConanState, path: &str) -> String {
-    path.trim_start_matches('/')
-        .trim_start_matches("pkgs/conan/")
-        .trim_start_matches("conan/")
-        .to_string()
-}
-
 async fn authenticate(State(st): State<Arc<ConanState>>, headers: HeaderMap) -> Response {
     // Conan 2.x login flow: the client authenticates (Basic), then uses the
     // returned raw token for subsequent uploads. Return the write token when
