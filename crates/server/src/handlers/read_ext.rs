@@ -14,15 +14,21 @@ pub async fn commit_log_handler(
     let page: usize = q.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
     let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(20);
     let store = state.store.clone();
-    let r = tokio::task::spawn_blocking(move || {
-        pollster::block_on(jjlab_git::read::commit_log(&store, &org, &repo, page.saturating_sub(1), limit))
+    let (items, total) = match run_jj(move || {
+        pollster::block_on(jjlab_git::read::commit_log(
+            &store,
+            &org,
+            &repo,
+            page.saturating_sub(1),
+            limit,
+        ))
     })
-    .await;
-    match r {
-        Ok(Ok((items, total))) => Json(json!({ "total_count": total, "commits": items })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    .await
+    {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "total_count": total, "commits": items })).into_response()
 }
 
 pub async fn tags_handler(
@@ -30,15 +36,11 @@ pub async fn tags_handler(
     Path((org, repo)): Path<(String, String)>,
 ) -> Response {
     let store = state.store.clone();
-    let r = tokio::task::spawn_blocking(move || {
-        pollster::block_on(jjlab_git::read::tags(&store, &org, &repo))
-    })
-    .await;
-    match r {
-        Ok(Ok(tags)) => Json(json!({ "tags": tags })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    let tags = match run_jj(move || pollster::block_on(jjlab_git::read::tags(&store, &org, &repo))).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "tags": tags })).into_response()
 }
 
 pub async fn refs_handler(
@@ -46,21 +48,15 @@ pub async fn refs_handler(
     Path((org, repo)): Path<(String, String)>,
 ) -> Response {
     let store = state.store.clone();
-    let r = tokio::task::spawn_blocking(move || {
-        pollster::block_on(jjlab_git::read::all_refs(&store, &org, &repo))
-    })
-    .await;
-    match r {
-        Ok(Ok(refs)) => {
-            let items: Vec<Value> = refs
-                .into_iter()
-                .map(|(name, sha)| json!({ "ref": name, "sha": sha }))
-                .collect();
-            Json(json!({ "refs": items })).into_response()
-        }
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    let refs = match run_jj(move || pollster::block_on(jjlab_git::read::all_refs(&store, &org, &repo))).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let items: Vec<Value> = refs
+        .into_iter()
+        .map(|(name, sha)| json!({ "ref": name, "sha": sha }))
+        .collect();
+    Json(json!({ "refs": items })).into_response()
 }
 
 pub async fn contents_handler(
@@ -71,7 +67,7 @@ pub async fn contents_handler(
     let sha = q.get("ref").cloned().unwrap_or_default();
     let store = state.store.clone();
     let is_dir = path.ends_with('/') || path.is_empty();
-    let r = tokio::task::spawn_blocking(move || {
+    match run_jj(move || {
         if is_dir {
             pollster::block_on(jjlab_git::read::contents_dir(&store, &org, &repo, &sha))
                 .map(|entries| Json(json!({ "entries": entries })).into_response())
@@ -80,11 +76,10 @@ pub async fn contents_handler(
                 .map(|v| Json(v).into_response())
         }
     })
-    .await;
-    match r {
-        Ok(Ok(resp)) => resp,
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    .await
+    {
+        Ok(resp) => resp,
+        Err(resp) => resp,
     }
 }
 
@@ -97,15 +92,15 @@ pub async fn compare_handler(
         return json_err(StatusCode::BAD_REQUEST, "base and head required".into());
     };
     let store = state.store.clone();
-    let r = tokio::task::spawn_blocking(move || {
+    let patch = match run_jj(move || {
         pollster::block_on(jjlab_git::read::compare_patch(&store, &org, &repo, &base, &head))
     })
-    .await;
-    match r {
-        Ok(Ok(patch)) => Json(json!({ "diff": patch })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    .await
+    {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "diff": patch })).into_response()
 }
 
 pub async fn archive_handler(
@@ -117,28 +112,27 @@ pub async fn archive_handler(
     }
     let store = state.store.clone();
     let (o2, r2, s2) = (org.clone(), repo.clone(), sha.clone());
-    let r = tokio::task::spawn_blocking(move || {
+    let bytes = match run_jj(move || {
         pollster::block_on(jjlab_git::read::archive_tarball(&store, &o2, &r2, &s2))
     })
-    .await;
-    match r {
-        Ok(Ok(bytes)) => (
-            StatusCode::OK,
-            [
-                ("content-type", "application/gzip"),
-                (
-                    "content-disposition",
-                    &format!("attachment; filename=\"{repo}-{sha}.tar.gz\"")[..],
-                ),
-            ],
-            bytes,
-        )
-            .into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    .await
+    {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "application/gzip"),
+            (
+                "content-disposition",
+                &format!("attachment; filename=\"{repo}-{sha}.tar.gz\"")[..],
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
 }
-
 
 pub async fn contents_root_handler(
     State(state): State<AppState>,
@@ -147,13 +141,13 @@ pub async fn contents_root_handler(
 ) -> Response {
     let sha = q.get("ref").cloned().unwrap_or_default();
     let store = state.store.clone();
-    let r = tokio::task::spawn_blocking(move || {
+    let entries = match run_jj(move || {
         pollster::block_on(jjlab_git::read::contents_dir(&store, &org, &repo, &sha))
     })
-    .await;
-    match r {
-        Ok(Ok(entries)) => Json(json!({ "entries": entries })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    .await
+    {
+        Ok(e) => e,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "entries": entries })).into_response()
 }

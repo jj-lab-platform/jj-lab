@@ -104,8 +104,15 @@ pub async fn smart_http_rpc(
                 // the view into SQLite.
                 let store = state.store.clone();
                 let db = state.db.clone();
-                let _ = tokio::task::spawn_blocking(move || {
-                    pollster::block_on(jjlab_git::sync::import_after_receive(&store, &db, &org, &repo))
+                let org = org.clone();
+                let repo = repo.clone();
+                let _ = run_jj(move || {
+                    pollster::block_on(jjlab_git::sync::import_after_receive(
+                        &store,
+                        &db,
+                        &org,
+                        &repo,
+                    ))
                 })
                 .await;
             }

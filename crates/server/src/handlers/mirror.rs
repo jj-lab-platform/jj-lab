@@ -1,7 +1,6 @@
 use crate::*;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
@@ -15,25 +14,21 @@ pub async fn clone_remote(
     let branch = body.branch.clone();
     let store = state.store.clone();
     let db = state.db.clone();
-    match tokio::task::spawn_blocking(move || {
-        (|| {
-            pollster::block_on(jjlab_git::sync::clone_remote(
-                &store,
-                &db,
-                &org,
-                &repo,
-                &url,
-                branch.as_deref(),
-            ))?;
-            pollster::block_on(jjlab_git::project::project_repo(&store, &db, &org, &repo))
-        })()
+    let head = match run_jj(move || {
+        pollster::block_on(async {
+            let head =
+                jjlab_git::sync::clone_remote(&store, &db, &org, &repo, &url, branch.as_deref())
+                    .await?;
+            jjlab_git::project::project_repo(&store, &db, &org, &repo).await?;
+            Ok(head)
+        })
     })
     .await
     {
-        Ok(Ok(head)) => Json(json!({ "ok": true, "head": head })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+        Ok(h) => h,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "ok": true, "head": head })).into_response()
 }
 
 pub async fn fetch_remote(
@@ -45,20 +40,20 @@ pub async fn fetch_remote(
     let url = body.url.clone();
     let store = state.store.clone();
     let db = state.db.clone();
-    match tokio::task::spawn_blocking(move || {
-        (|| {
+    let updated = match run_jj(move || {
+        pollster::block_on(async {
             let updated =
-                pollster::block_on(jjlab_git::sync::fetch_remote(&store, &org, &repo, &remote, &url))?;
-            pollster::block_on(jjlab_git::project::project_repo(&store, &db, &org, &repo))?;
-            Ok::<usize, jjlab_git::repo::RepoError>(updated)
-        })()
+                jjlab_git::sync::fetch_remote(&store, &org, &repo, &remote, &url).await?;
+            jjlab_git::project::project_repo(&store, &db, &org, &repo).await?;
+            Ok(updated)
+        })
     })
     .await
     {
-        Ok(Ok(updated)) => Json(json!({ "ok": true, "updated_bookmarks": updated })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "ok": true, "updated_bookmarks": updated })).into_response()
 }
 
 pub async fn push_mirror(
@@ -70,16 +65,16 @@ pub async fn push_mirror(
     let secret = body.secret.clone();
     let store = state.store.clone();
     let db = state.db.clone();
-    match tokio::task::spawn_blocking(move || {
-        (|| {
-            pollster::block_on(jjlab_git::sync::push_mirror(&store, &org, &repo, &url, &secret))?;
-            pollster::block_on(jjlab_git::project::project_repo(&store, &db, &org, &repo))
-        })()
+    let () = match run_jj(move || {
+        pollster::block_on(async {
+            jjlab_git::sync::push_mirror(&store, &org, &repo, &url, &secret).await?;
+            jjlab_git::project::project_repo(&store, &db, &org, &repo).await
+        })
     })
     .await
     {
-        Ok(Ok(())) => Json(json!({ "ok": true })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "ok": true })).into_response()
 }

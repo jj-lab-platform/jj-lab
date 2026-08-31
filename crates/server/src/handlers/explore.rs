@@ -12,22 +12,22 @@ struct OrgRepoEntry {
 }
 
 pub async fn list_orgs(State(state): State<AppState>) -> Response {
-    let Ok(orgs) = state.db.list_orgs() else {
-        return json_err(StatusCode::INTERNAL_SERVER_ERROR, "list orgs".into());
+    let db = state.db.clone();
+    let orgs = match db_run(&db, |db| db.list_orgs()).await {
+        Ok(o) => o,
+        Err(resp) => return resp,
     };
+    let repos = db_run(&db, |db| db.list_repos()).await.unwrap_or_default();
     let mut items: Vec<Value> = Vec::new();
     for (id, name) in orgs {
-        let repos = match state.db.list_repos() {
-            Ok(all) => all
-                .into_iter()
-                .filter(|r| r.org_id == id)
-                .map(|r| OrgRepoEntry { name: r.name, default_bookmark: r.default_bookmark })
-                .collect::<Vec<_>>(),
-            Err(_) => Vec::new(),
-        };
+        let subs: Vec<_> = repos
+            .iter()
+            .filter(|r| r.org_id == id)
+            .map(|r| OrgRepoEntry { name: r.name.clone(), default_bookmark: r.default_bookmark.clone() })
+            .collect();
         items.push(json!({
             "org": name,
-            "repos": repos.into_iter().map(|r| json!({
+            "repos": subs.into_iter().map(|r| json!({
                 "repo": r.name,
                 "default_bookmark": r.default_bookmark,
             })).collect::<Vec<_>>(),
@@ -45,15 +45,13 @@ pub async fn graph_handler(
 ) -> Response {
     let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100);
     let store = state.store.clone();
-    let r = tokio::task::spawn_blocking(move || {
-        pollster::block_on(jjlab_git::read::change_graph(&store, &org, &repo, limit))
-    })
-    .await;
-    match r {
-        Ok(Ok(nodes)) => Json(json!({ "graph": nodes })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    let nodes = match run_jj(move || pollster::block_on(jjlab_git::read::change_graph(&store, &org, &repo, limit)))
+    .await
+    {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "graph": nodes })).into_response()
 }
 
 pub async fn file_log_handler(
@@ -66,15 +64,13 @@ pub async fn file_log_handler(
     };
     let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(50);
     let store = state.store.clone();
-    let r = tokio::task::spawn_blocking(move || {
-        pollster::block_on(jjlab_git::read::file_log(&store, &org, &repo, &path, limit))
-    })
-    .await;
-    match r {
-        Ok(Ok((items, total))) => Json(json!({ "total_count": total, "commits": items })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    let (items, total) = match run_jj(move || pollster::block_on(jjlab_git::read::file_log(&store, &org, &repo, &path, limit)))
+    .await
+    {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "total_count": total, "commits": items })).into_response()
 }
 
 pub async fn search_handler(
@@ -87,15 +83,13 @@ pub async fn search_handler(
         return json_err(StatusCode::BAD_REQUEST, "pattern required".into());
     };
     let store = state.store.clone();
-    let r = tokio::task::spawn_blocking(move || {
-        pollster::block_on(jjlab_git::read::search_code(&store, &org, &repo, &rev, &pattern))
-    })
-    .await;
-    match r {
-        Ok(Ok(matches)) => Json(json!({ "matches": matches })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    let matches = match run_jj(move || pollster::block_on(jjlab_git::read::search_code(&store, &org, &repo, &rev, &pattern)))
+    .await
+    {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "matches": matches })).into_response()
 }
 
 // ── static SPA ──

@@ -26,7 +26,7 @@ fn load_mr(state: &AppState, org: &str, repo: &str, number: i64) -> Result<jjlab
     state
         .db
         .get_mr_by_number(&repo_id, number)
-        .map_err(|e| gitea_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| gitea_err(error_status(&e), e.to_string()))?
         .ok_or_else(|| gitea_err(StatusCode::NOT_FOUND, format!("pull request {number} not found")))
 }
 
@@ -39,34 +39,36 @@ pub async fn create_mr_handler(
     let store = state.store.clone();
     let head = body.head.clone();
     let (o2, r2) = (org.clone(), repo.clone());
-    let resolved = tokio::task::spawn_blocking(move || {
+    let (head_change_id, head_sha) = match run_jj(move || {
         pollster::block_on(jjlab_git::read::resolve_rev(&store, &o2, &r2, &head))
     })
-    .await;
-    let (head_change_id, head_sha) = match resolved {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => return json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    .await
+    {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     let repo_id = format!("{org}/{repo}");
-    let _ = state.db.upsert_org(&org, &org);
-    let _ = state.db.upsert_repo(&repo_id, &org, &repo, "main", None);
-    match state.db.create_mr(
-        &repo_id,
-        &body.title,
-        &body.body,
-        &server_author().0,
-        &head_change_id,
-        Some(&head_sha),
-        Some(&body.head),
-        &body.base,
-    ) {
-        Ok(mr) => (
-            StatusCode::CREATED,
-            Json(mr_json(&mr, "pending".to_string())),
+    let db = state.db.clone();
+    let (title, descr, head, base, author) =
+        (body.title, body.body, body.head, body.base, server_author().0);
+    match db_run(&db, move |db| {
+        db.upsert_org(&org, &org)?;
+        db.upsert_repo(&repo_id, &org, &repo, "main", None)?;
+        db.create_mr(
+            &repo_id,
+            &title,
+            &descr,
+            &author,
+            &head_change_id,
+            Some(&head_sha),
+            Some(&head),
+            &base,
         )
-            .into_response(),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    })
+    .await
+    {
+        Ok(mr) => (StatusCode::CREATED, Json(mr_json(&mr, "pending".to_string()))).into_response(),
+        Err(resp) => resp,
     }
 }
 
@@ -76,13 +78,16 @@ pub async fn list_mrs(
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     let repo_id = format!("{org}/{repo}");
-    let mrs = match state.db.list_mrs(&repo_id, q.get("state").map(String::as_str)) {
+    let db = state.db.clone();
+    let state_filter = q.get("state").cloned();
+    let mrs = match db_run(&db, move |db| db.list_mrs(&repo_id, state_filter.as_deref())).await {
         Ok(v) => v,
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(resp) => return resp,
     };
     let mut items = Vec::new();
     for mr in mrs {
-        let rs = state.db.mr_review_state(mr.id).unwrap_or_default();
+        let db = db.clone();
+        let rs = db_run(&db, move |db| db.mr_review_state(mr.id)).await.unwrap_or_default();
         items.push(mr_json(&mr, rs));
     }
     Json(json!({ "pull_requests": items })).into_response()
@@ -96,7 +101,8 @@ pub async fn get_mr_handler(
         Ok(mr) => mr,
         Err(resp) => return resp,
     };
-    let rs = state.db.mr_review_state(mr.id).unwrap_or_default();
+    let db = state.db.clone();
+    let rs = db_run(&db, move |db| db.mr_review_state(mr.id)).await.unwrap_or_default();
     Json(mr_json(&mr, rs)).into_response()
 }
 
@@ -109,13 +115,15 @@ pub async fn update_mr_handler(
         Ok(mr) => mr,
         Err(resp) => return resp,
     };
-    match state.db.update_mr(mr.id, Some(&body.state), None, None) {
-        Ok(updated) => {
-            let rs = state.db.mr_review_state(mr.id).unwrap_or_default();
-            Json(mr_json(&updated, rs)).into_response()
-        }
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    let db = state.db.clone();
+    let stat = body.state;
+    let id = mr.id;
+    let updated = match db_run(&db, move |db| db.update_mr(id, Some(&stat), None, None)).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+    let rs = db_run(&db, move |db| db.mr_review_state(id)).await.unwrap_or_default();
+    Json(mr_json(&updated, rs)).into_response()
 }
 
 pub async fn add_review(
@@ -127,19 +135,19 @@ pub async fn add_review(
         Ok(mr) => mr,
         Err(resp) => return resp,
     };
-    match state.db.add_mr_review(
-        mr.id,
-        &server_author().0,
-        &body.state,
-        &body.body,
-        mr.head_sha.as_deref(),
-    ) {
-        Ok(_) => {
-            let rs = state.db.mr_review_state(mr.id).unwrap_or_default();
-            Json(json!({ "review_state": rs })).into_response()
-        }
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    let db = state.db.clone();
+    let (author, st, body_, head_sha, id) =
+        (server_author().0, body.state, body.body, mr.head_sha.clone(), mr.id);
+    match db_run(&db, move |db| {
+        db.add_mr_review(id, &author, &st, &body_, head_sha.as_deref())
+    })
+    .await
+    {
+        Ok(_) => {}
+        Err(resp) => return resp,
     }
+    let rs = db_run(&db, move |db| db.mr_review_state(id)).await.unwrap_or_default();
+    Json(json!({ "review_state": rs })).into_response()
 }
 
 pub async fn list_reviews(
@@ -150,23 +158,24 @@ pub async fn list_reviews(
         Ok(mr) => mr,
         Err(resp) => return resp,
     };
-    match state.db.list_mr_reviews(mr.id) {
-        Ok(rows) => {
-            let items: Vec<Value> = rows
-                .into_iter()
-                .map(|r| {
-                    json!({
-                        "reviewer": r.reviewer,
-                        "state": r.state,
-                        "body": r.body,
-                        "commit_sha": r.commit_sha,
-                    })
-                })
-                .collect();
-            Json(json!({ "reviews": items })).into_response()
-        }
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    let db = state.db.clone();
+    let id = mr.id;
+    let rows = match db_run(&db, move |db| db.list_mr_reviews(id)).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let items: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "reviewer": r.reviewer,
+                "state": r.state,
+                "body": r.body,
+                "commit_sha": r.commit_sha,
+            })
+        })
+        .collect();
+    Json(json!({ "reviews": items })).into_response()
 }
 
 pub async fn add_comment(
@@ -178,15 +187,16 @@ pub async fn add_comment(
         Ok(mr) => mr,
         Err(resp) => return resp,
     };
-    match state.db.add_mr_comment(
-        mr.id,
-        &server_author().0,
-        &body.body,
-        body.path.as_deref(),
-        mr.head_sha.as_deref(),
-    ) {
+    let db = state.db.clone();
+    let (author, body_, path, head_sha, id) =
+        (server_author().0, body.body, body.path, mr.head_sha.clone(), mr.id);
+    match db_run(&db, move |db| {
+        db.add_mr_comment(id, &author, &body_, path.as_deref(), head_sha.as_deref())
+    })
+    .await
+    {
         Ok(_) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(resp) => resp,
     }
 }
 
@@ -198,23 +208,24 @@ pub async fn list_comments(
         Ok(mr) => mr,
         Err(resp) => return resp,
     };
-    match state.db.list_mr_comments(mr.id) {
-        Ok(rows) => {
-            let items: Vec<Value> = rows
-                .into_iter()
-                .map(|r| {
-                    json!({
-                        "author": r.author,
-                        "body": r.body,
-                        "path": r.path,
-                        "commit_sha": r.commit_sha,
-                    })
-                })
-                .collect();
-            Json(json!({ "comments": items })).into_response()
-        }
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    let db = state.db.clone();
+    let id = mr.id;
+    let rows = match db_run(&db, move |db| db.list_mr_comments(id)).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let items: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "author": r.author,
+                "body": r.body,
+                "path": r.path,
+                "commit_sha": r.commit_sha,
+            })
+        })
+        .collect();
+    Json(json!({ "comments": items })).into_response()
 }
 
 /// Unified diff between MR base and head.
@@ -231,13 +242,13 @@ pub async fn mr_diff(
     };
     let store = state.store.clone();
     let base = mr.base_rev.clone();
-    let r = tokio::task::spawn_blocking(move || {
+    let patch = match run_jj(move || {
         pollster::block_on(jjlab_git::read::compare_patch(&store, &org, &repo, &base, &head_sha))
     })
-    .await;
-    match r {
-        Ok(Ok(patch)) => Json(json!({ "diff": patch })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    .await
+    {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "diff": patch })).into_response()
 }

@@ -19,6 +19,15 @@ pub enum Error {
 
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    #[error("join error: {0}")]
+    Join(String),
+}
+
+impl From<tokio::task::JoinError> for Error {
+    fn from(e: tokio::task::JoinError) -> Self {
+        Error::Join(e.to_string())
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

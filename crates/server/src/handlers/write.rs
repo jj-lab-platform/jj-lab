@@ -6,7 +6,6 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 
-
 pub async fn create_repo(
     State(state): State<AppState>,
     Path((org, repo)): Path<(String, String)>,
@@ -16,20 +15,20 @@ pub async fn create_repo(
     let db = state.db.clone();
     let author = server_author();
     let (o2, r2) = (org.clone(), repo.clone());
-    match tokio::task::spawn_blocking(move || {
+    let default_branch = body.default_branch.clone();
+    let res = run_jj(move || {
         pollster::block_on(jjlab_git::mutation::create_repo(
-            &store, &db, &org, &repo, &body.default_branch, author,
+            &store, &db, &org, &repo, &default_branch, author,
         ))
     })
-    .await
-    {
-        Ok(Ok(())) => (
+    .await;
+    match res {
+        Ok(()) => (
             StatusCode::CREATED,
             Json(json!({ "full_name": format!("{o2}/{r2}") })),
         )
             .into_response(),
-        Ok(Err(e)) => json_err(StatusCode::CONFLICT, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(resp) => resp,
     }
 }
 
@@ -40,7 +39,7 @@ pub async fn delete_repo(
     let store = state.store.clone();
     let db = state.db.clone();
     let repo_id = format!("{org}/{repo}");
-    match tokio::task::spawn_blocking(move || {
+    match run_jj(move || {
         // Remove the on-disk store first; treat "not found" as already-gone
         // so that a re-DELETE also cleans any orphaned DB rows.
         match pollster::block_on(jjlab_git::mutation::delete_repo(&store, &org, &repo)) {
@@ -53,9 +52,8 @@ pub async fn delete_repo(
     })
     .await
     {
-        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(resp) => resp,
     }
 }
 
@@ -72,10 +70,11 @@ pub async fn rename_repo(
     let new_id = format!("{org}/{new_name}");
 
     // DB rename first (single UPDATE, cascades repo_id everywhere).
-    let outcome = state.db.rename_repo(&old_id, &new_id);
-    let outcome = match outcome {
+    let db = state.db.clone();
+    let (oid, nid) = (old_id.clone(), new_id.clone());
+    let outcome = match db.run(move |db| db.rename_repo(&oid, &nid)).await {
         Ok(o) => o,
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => return json_err(error_status(&e), e.to_string()),
     };
     match outcome {
         jjlab_core::db::RenameOutcome::NotFound => {
@@ -92,7 +91,8 @@ pub async fn rename_repo(
     let (old_dir, new_dir) = match (old_dir, new_dir) {
         (Ok(a), Ok(b)) => (a, b),
         (Err(e), _) | (_, Err(e)) => {
-            let _ = state.db.rename_repo(&new_id, &old_id);
+            let (nid, oid) = (new_id.clone(), old_id.clone());
+            let _ = db.run(move |db| db.rename_repo(&nid, &oid)).await;
             return json_err(StatusCode::BAD_REQUEST, e.to_string());
         }
     };
@@ -100,7 +100,8 @@ pub async fn rename_repo(
         Ok(()) => Json(json!({ "full_name": new_id })).into_response(),
         Err(e) => {
             // Roll back the DB rename so metadata stays consistent.
-            let _ = state.db.rename_repo(&new_id, &old_id);
+            let (nid, oid) = (new_id.clone(), old_id.clone());
+            let _ = db.run(move |db| db.rename_repo(&nid, &oid)).await;
             json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("rename: {e}"))
         }
     }
@@ -114,17 +115,18 @@ pub async fn set_branch_handler(
     let store = state.store.clone();
     let db = state.db.clone();
     let n2 = name.clone();
-    match tokio::task::spawn_blocking(move || {
+    let target = body.target.clone();
+    let sha = match run_jj(move || {
         pollster::block_on(jjlab_git::mutation::set_branch(
-            &store, &db, &org, &repo, &name, &body.target,
+            &store, &db, &org, &repo, &name, &target,
         ))
     })
     .await
     {
-        Ok(Ok(sha)) => Json(json!({ "name": n2, "sha": sha })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "name": n2, "sha": sha })).into_response()
 }
 
 pub async fn delete_branch_handler(
@@ -133,14 +135,13 @@ pub async fn delete_branch_handler(
 ) -> Response {
     let store = state.store.clone();
     let db = state.db.clone();
-    match tokio::task::spawn_blocking(move || {
+    match run_jj(move || {
         pollster::block_on(jjlab_git::mutation::delete_branch(&store, &db, &org, &repo, &name))
     })
     .await
     {
-        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(resp) => resp,
     }
 }
 
@@ -152,17 +153,18 @@ pub async fn set_tag_handler(
     let store = state.store.clone();
     let db = state.db.clone();
     let n2 = name.clone();
-    match tokio::task::spawn_blocking(move || {
+    let target = body.target.clone();
+    let sha = match run_jj(move || {
         pollster::block_on(jjlab_git::mutation::set_tag(
-            &store, &db, &org, &repo, &name, &body.target,
+            &store, &db, &org, &repo, &name, &target,
         ))
     })
     .await
     {
-        Ok(Ok(sha)) => Json(json!({ "name": n2, "sha": sha })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "name": n2, "sha": sha })).into_response()
 }
 
 pub async fn delete_tag_handler(
@@ -171,14 +173,13 @@ pub async fn delete_tag_handler(
 ) -> Response {
     let store = state.store.clone();
     let db = state.db.clone();
-    match tokio::task::spawn_blocking(move || {
+    match run_jj(move || {
         pollster::block_on(jjlab_git::mutation::delete_tag(&store, &db, &org, &repo, &name))
     })
     .await
     {
-        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(resp) => resp,
     }
 }
 
@@ -201,30 +202,21 @@ pub async fn create_file(
     let author = server_author();
     let branch = body.branch.clone();
     let amend = body.amend;
-    match tokio::task::spawn_blocking(move || {
+    let outcome = match run_jj(move || {
         pollster::block_on(jjlab_git::mutation::write_file(
-            &store,
-            &db,
-            &org,
-            &repo,
-            &branch,
-            &path,
-            &content,
-            &message,
-            author,
-            amend,
+            &store, &db, &org, &repo, &branch, &path, &content, &message, author, amend,
         ))
     })
     .await
     {
-        Ok(Ok(outcome)) => (
-            StatusCode::CREATED,
-            Json(json!({ "sha": outcome.sha, "change_id": outcome.change_id })),
-        )
-            .into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+        Ok(o) => o,
+        Err(resp) => return resp,
+    };
+    (
+        StatusCode::CREATED,
+        Json(json!({ "sha": outcome.sha, "change_id": outcome.change_id })),
+    )
+        .into_response()
 }
 
 pub async fn update_file(
@@ -246,26 +238,17 @@ pub async fn update_file(
     let author = server_author();
     let branch = body.branch.clone();
     let amend = body.amend;
-    match tokio::task::spawn_blocking(move || {
+    let outcome = match run_jj(move || {
         pollster::block_on(jjlab_git::mutation::write_file(
-            &store,
-            &db,
-            &org,
-            &repo,
-            &branch,
-            &path,
-            &content,
-            &message,
-            author,
-            amend,
+            &store, &db, &org, &repo, &branch, &path, &content, &message, author, amend,
         ))
     })
     .await
     {
-        Ok(Ok(outcome)) => Json(json!({ "sha": outcome.sha, "change_id": outcome.change_id })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+        Ok(o) => o,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "sha": outcome.sha, "change_id": outcome.change_id })).into_response()
 }
 
 pub async fn delete_file_handler(
@@ -283,15 +266,15 @@ pub async fn delete_file_handler(
     let author = server_author();
     let branch = body.branch.clone();
     let amend = body.amend;
-    match tokio::task::spawn_blocking(move || {
+    let outcome = match run_jj(move || {
         pollster::block_on(jjlab_git::mutation::delete_file(
             &store, &db, &org, &repo, &branch, &path, &message, author, amend,
         ))
     })
     .await
     {
-        Ok(Ok(outcome)) => Json(json!({ "sha": outcome.sha, "change_id": outcome.change_id })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+        Ok(o) => o,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "sha": outcome.sha, "change_id": outcome.change_id })).into_response()
 }

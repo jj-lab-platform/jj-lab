@@ -35,12 +35,22 @@ pub async fn create_release(
     Json(body): Json<ReleaseBody>,
 ) -> Response {
     let repo_id = format!("{org}/{repo}");
-    let _ = state.db.upsert_org(&org, &org);
-    let _ = state.db.upsert_repo(&repo_id, &org, &repo, "main", None);
+    let db = state.db.clone();
+    {
+        let (org2, repo2, rid) = (org.clone(), repo.clone(), repo_id.clone());
+        if let Err(resp) = db_run(&db, move |db| -> jjlab_core::Result<()> {
+            db.upsert_org(&org2, &org2)?;
+            db.upsert_repo(&rid, &org2, &repo2, "main", None)
+        })
+        .await
+        {
+            return resp;
+        }
+    }
     let store = state.store.clone();
     let db2 = state.db.clone();
     let tag = body.tag_name.clone();
-    let ensure = tokio::task::spawn_blocking(move || {
+    if let Err(resp) = run_jj(move || {
         pollster::block_on(async {
             let repo_arc = jjlab_git::read::open(&store, &org, &repo).await?;
             match jjlab_git::read::resolve_commit(&repo_arc, &tag) {
@@ -54,23 +64,26 @@ pub async fn create_release(
             }
         })
     })
-    .await;
-    match ensure {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
-    match state
-        .db
-        .create_release(&repo_id, &body.tag_name, &body.name, &body.body, body.draft, body.prerelease)
+    .await
     {
-        Ok(r) => (
-            StatusCode::CREATED,
-            Json(release_json(&r, state.db.list_release_assets(r.id).unwrap_or_default())),
-        )
-            .into_response(),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        return resp;
     }
+
+    let (tag_name, name, body_, draft, prerelease) =
+        (body.tag_name, body.name, body.body, body.draft, body.prerelease);
+    let rid = repo_id.clone();
+    let r = match db_run(&db, move |db| {
+        db.create_release(&rid, &tag_name, &name, &body_, draft, prerelease)
+    })
+    .await
+    {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let assets = db_run(&db, move |db| db.list_release_assets(r.id))
+        .await
+        .unwrap_or_default();
+    (StatusCode::CREATED, Json(release_json(&r, assets))).into_response()
 }
 
 pub async fn list_releases(
@@ -78,19 +91,20 @@ pub async fn list_releases(
     Path((org, repo)): Path<(String, String)>,
 ) -> Response {
     let repo_id = format!("{org}/{repo}");
-    match state.db.list_releases(&repo_id) {
-        Ok(rows) => {
-            let items: Vec<Value> = rows
-                .into_iter()
-                .map(|r| {
-                    let assets = state.db.list_release_assets(r.id).unwrap_or_default();
-                    release_json(&r, assets)
-                })
-                .collect();
-            Json(json!({ "releases": items })).into_response()
-        }
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    let db = state.db.clone();
+    let rows = match db_run(&db, move |db| db.list_releases(&repo_id)).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let mut items = Vec::new();
+    for r in rows {
+        let db = db.clone();
+        let assets = db_run(&db, move |db| db.list_release_assets(r.id))
+            .await
+            .unwrap_or_default();
+        items.push(release_json(&r, assets));
     }
+    Json(json!({ "releases": items })).into_response()
 }
 
 pub async fn get_release(
@@ -98,14 +112,17 @@ pub async fn get_release(
     Path((org, repo, tag)): Path<(String, String, String)>,
 ) -> Response {
     let repo_id = format!("{org}/{repo}");
-    match state.db.get_release_by_tag(&repo_id, &tag) {
-        Ok(Some(r)) => {
-            let assets = state.db.list_release_assets(r.id).unwrap_or_default();
-            Json(release_json(&r, assets)).into_response()
-        }
-        Ok(None) => json_err(StatusCode::NOT_FOUND, format!("release {tag} not found")),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    let db = state.db.clone();
+    let tag2 = tag.clone();
+    let r = match db_run(&db, move |db| db.get_release_by_tag(&repo_id, &tag2)).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return json_err(StatusCode::NOT_FOUND, format!("release {tag} not found")),
+        Err(resp) => return resp,
+    };
+    let assets = db_run(&db, move |db| db.list_release_assets(r.id))
+        .await
+        .unwrap_or_default();
+    Json(release_json(&r, assets)).into_response()
 }
 
 pub async fn latest_release(
@@ -113,14 +130,17 @@ pub async fn latest_release(
     Path((org, repo)): Path<(String, String)>,
 ) -> Response {
     let repo_id = format!("{org}/{repo}");
-    let all = match state.db.list_releases(&repo_id) {
+    let db = state.db.clone();
+    let all = match db_run(&db, move |db| db.list_releases(&repo_id)).await {
         Ok(v) => v,
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(resp) => return resp,
     };
     let Some(first) = all.into_iter().find(|r| !r.draft && !r.prerelease) else {
         return json_err(StatusCode::NOT_FOUND, "no releases".into());
     };
-    let assets = state.db.list_release_assets(first.id).unwrap_or_default();
+    let assets = db_run(&db, move |db| db.list_release_assets(first.id))
+        .await
+        .unwrap_or_default();
     Json(release_json(&first, assets)).into_response()
 }
 
@@ -129,13 +149,16 @@ pub async fn delete_release(
     Path((org, repo, tag)): Path<(String, String, String)>,
 ) -> Response {
     let repo_id = format!("{org}/{repo}");
-    match state.db.get_release_by_tag(&repo_id, &tag) {
-        Ok(Some(r)) => match state.db.delete_release(r.id) {
-            Ok(()) => StatusCode::NO_CONTENT.into_response(),
-            Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-        },
-        Ok(None) => json_err(StatusCode::NOT_FOUND, format!("release {tag} not found")),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    let db = state.db.clone();
+    let tag2 = tag.clone();
+    let r = match db_run(&db, move |db| db.get_release_by_tag(&repo_id, &tag2)).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return json_err(StatusCode::NOT_FOUND, format!("release {tag} not found")),
+        Err(resp) => return resp,
+    };
+    match db_run(&db, move |db| db.delete_release(r.id)).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(resp) => resp,
     }
 }
 
@@ -145,12 +168,12 @@ pub async fn upload_asset(
     mut multipart: axum::extract::Multipart,
 ) -> Response {
     let repo_id = format!("{org}/{repo}");
-    let Some(rel) = (match state.db.get_release_by_tag(&repo_id, &tag) {
-        Ok(Some(r)) => Some(r),
-        Ok(None) => None,
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }) else {
-        return json_err(StatusCode::NOT_FOUND, format!("release {tag} not found"));
+    let db = state.db.clone();
+    let tag2 = tag.clone();
+    let rel = match db_run(&db, move |db| db.get_release_by_tag(&repo_id, &tag2)).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return json_err(StatusCode::NOT_FOUND, format!("release {tag} not found")),
+        Err(resp) => return resp,
     };
 
     let mut saved = Vec::new();
@@ -171,13 +194,14 @@ pub async fn upload_asset(
                 return json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("store asset: {e}"));
             }
         }
-        match state
-            .db
-            .add_release_asset(rel.id, &name, data.len() as i64, &digest, &ct)
-        {
-            Ok(a) => saved.push(a),
-            Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-        }
+        let db = db.clone();
+        let rel_id = rel.id;
+        let (nm, dg, size, ct2) = (name.clone(), digest.clone(), data.len() as i64, ct.clone());
+        let a = match db_run(&db, move |db| db.add_release_asset(rel_id, &nm, size, &dg, &ct2)).await {
+            Ok(a) => a,
+            Err(resp) => return resp,
+        };
+        saved.push(a);
     }
     if saved.is_empty() {
         return json_err(StatusCode::BAD_REQUEST, "multipart body required".into());
@@ -196,18 +220,20 @@ pub async fn download_asset(
     Path((org, repo, tag, name)): Path<(String, String, String, String)>,
 ) -> Response {
     let repo_id = format!("{org}/{repo}");
-    let asset = match state
-        .db
-        .get_release_by_tag(&repo_id, &tag)
-        .ok()
-        .flatten()
-        .and_then(|r| state.db.get_release_asset(r.id, &name).ok().flatten())
-    {
-        Some(a) => a,
-        None => return json_err(StatusCode::NOT_FOUND, format!("asset {name} not found")),
+    let db = state.db.clone();
+    let tag2 = tag.clone();
+    let rel = match db_run(&db, move |db| db.get_release_by_tag(&repo_id, &tag2)).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return json_err(StatusCode::NOT_FOUND, format!("release {tag} not found")),
+        Err(resp) => return resp,
     };
-    let digest = asset.digest.clone();
-    let blob_key = format!("sha256:{digest}");
+    let nm2 = name.clone();
+    let asset = match db_run(&db, move |db| db.get_release_asset(rel.id, &nm2)).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return json_err(StatusCode::NOT_FOUND, format!("asset {name} not found")),
+        Err(resp) => return resp,
+    };
+    let blob_key = format!("sha256:{}", asset.digest);
     let stream = match state.assets.open_file(&blob_key) {
         Ok(Some(f)) => tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(f)),
         Ok(None) => return json_err(StatusCode::NOT_FOUND, "asset blob missing".into()),
@@ -229,11 +255,16 @@ pub async fn delete_asset(
     Path((org, repo, tag, name)): Path<(String, String, String, String)>,
 ) -> Response {
     let repo_id = format!("{org}/{repo}");
-    let Some(rel) = state.db.get_release_by_tag(&repo_id, &tag).ok().flatten() else {
-        return json_err(StatusCode::NOT_FOUND, format!("release {tag} not found"));
+    let db = state.db.clone();
+    let tag2 = tag.clone();
+    let rel = match db_run(&db, move |db| db.get_release_by_tag(&repo_id, &tag2)).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return json_err(StatusCode::NOT_FOUND, format!("release {tag} not found")),
+        Err(resp) => return resp,
     };
-    match state.db.delete_release_asset(rel.id, &name) {
+    let nm2 = name.clone();
+    match db_run(&db, move |db| db.delete_release_asset(rel.id, &nm2)).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(resp) => resp,
     }
 }

@@ -196,6 +196,20 @@ impl Db {
         Ok(Self { pool: Arc::new(pool) })
     }
 
+    /// Run a synchronous DB closure on the blocking thread pool so a SQLite
+    /// write/lock wait never stalls the tokio reactor. Handlers call this to
+    /// get `Result<T>` back on their own async path.
+    pub async fn run<T, F>(&self, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Self) -> Result<T> + Send + 'static,
+    {
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || f(&this))
+            .await
+            .map_err(|e| Error::Join(e.to_string()))?
+    }
+
     pub fn upsert_org(&self, org_id: &str, name: &str) -> Result<()> {
         let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(

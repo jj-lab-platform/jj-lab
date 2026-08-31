@@ -274,6 +274,56 @@ fn json_err(status: StatusCode, msg: String) -> Response {
     gitea_err(status, msg)
 }
 
+/// Map a domain error to its HTTP status code. `NotFound`/`Invalid`/
+/// `Conflict` carry semantic statuses; everything else is an internal error.
+pub(crate) fn error_status(err: &jjlab_core::Error) -> StatusCode {
+    match err {
+        jjlab_core::Error::NotFound(_) => StatusCode::NOT_FOUND,
+        jjlab_core::Error::Invalid(_) => StatusCode::BAD_REQUEST,
+        jjlab_core::Error::Conflict(_) => StatusCode::CONFLICT,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+/// Map a git-layer error to its HTTP status code. Mirrors [`error_status`] but
+/// for [`jjlab_git::repo::RepoError`].
+pub(crate) fn repo_error_status(err: &jjlab_git::repo::RepoError) -> StatusCode {
+    match err {
+        jjlab_git::repo::RepoError::NotFound { .. } => StatusCode::NOT_FOUND,
+        jjlab_git::repo::RepoError::Invalid(_) => StatusCode::BAD_REQUEST,
+        jjlab_git::repo::RepoError::Conflict(_) => StatusCode::CONFLICT,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+/// Run a blocking git/jj operation off the reactor and fold its error into a
+/// ready-made response. Callers pass a `move ||` closure that owns its data and
+/// uses `pollster::block_on` inside (jj's `ReadonlyRepo` is `!Send`).
+pub(crate) async fn run_jj<T, F>(f: F) -> Result<T, Response>
+where
+    T: Send + 'static,
+    F: FnOnce() -> jjlab_git::repo::RepoResult<T> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(Ok(t)) => Ok(t),
+        Ok(Err(e)) => Err(json_err(repo_error_status(&e), e.to_string())),
+        Err(e) => Err(json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+/// Run a synchronous DB closure on the blocking pool and fold its
+/// [`jjlab_core::Error`] into a ready-made response (see [`Db::run`]).
+pub(crate) async fn db_run<T, F>(db: &Arc<Db>, f: F) -> Result<T, Response>
+where
+    T: Send + 'static,
+    F: FnOnce(&Db) -> jjlab_core::Result<T> + Send + 'static,
+{
+    match db.run(f).await {
+        Ok(t) => Ok(t),
+        Err(e) => Err(json_err(error_status(&e), e.to_string())),
+    }
+}
+
 /// Extract auth; enforce minimum level.
 #[allow(clippy::result_large_err)]
 pub 

@@ -94,6 +94,9 @@ impl RepoStore {
         let settings = settings::user_settings()
             .map_err(RepoError::Other)?;
         let path = self.checked_repo_dir(org, repo)?;
+        if !path.join(".jj").exists() {
+            return Err(RepoError::NotFound { org: org.to_string(), repo: repo.to_string() });
+        }
         let store_factories = default_backend_factories();
         let working_copy_factories = default_working_copy_factories();
         match jj_lib::workspace::Workspace::load(

@@ -165,14 +165,14 @@ pub fn resolve_commit(repo: &ReadonlyRepo, rev: &str) -> Result<CommitId, RepoEr
         }
     }
 
-    Err(RepoError::Other(format!("cannot resolve rev {rev:?}")))
+    Err(RepoError::NotFound { org: String::new(), repo: String::new() })
 }
 
 /// Resolve a change-id (reverse-hex prefix) strictly to its current commit id.
 pub fn resolve_change(repo: &ReadonlyRepo, change_id: &str) -> Result<CommitId, RepoError> {
     let prefix = match HexPrefix::try_from_reverse_hex(change_id) {
         Some(p) => p,
-        None => return Err(RepoError::Other(format!("invalid change id {change_id:?}"))),
+        None => return Err(RepoError::Invalid(format!("invalid change id {change_id:?}"))),
     };
     let mut heads = repo.view().heads().iter();
     let change_index = repo.readonly_index().change_id_index(&mut heads);
@@ -183,14 +183,18 @@ pub fn resolve_change(repo: &ReadonlyRepo, change_id: &str) -> Result<CommitId, 
                     return Ok(id);
                 }
             }
-            Err(RepoError::Other(format!("change id {change_id:?} is not visible")))
+            Err(RepoError::NotFound {
+                org: String::new(),
+                repo: String::new(),
+            })
         }
         Ok(PrefixResolution::AmbiguousMatch) => {
             Err(RepoError::Other(format!("change id {change_id:?} is ambiguous")))
         }
-        Ok(PrefixResolution::NoMatch) => {
-            Err(RepoError::Other(format!("cannot resolve change id {change_id:?}")))
-        }
+        Ok(PrefixResolution::NoMatch) => Err(RepoError::NotFound {
+            org: String::new(),
+            repo: String::new(),
+        }),
         Err(e) => Err(RepoError::Other(format!("resolve change prefix: {e}"))),
     }
 }
@@ -295,7 +299,10 @@ pub async fn read_blob(commit: &Commit, path: &str) -> Result<Vec<u8>, RepoError
         Some(jj_lib::backend::TreeValue::GitSubmodule(_)) => {
             Err(RepoError::Other(format!("{path:?} is a submodule")))
         }
-        None => Err(RepoError::Other(format!("not found: {path:?}"))),
+        None => Err(RepoError::NotFound {
+            org: String::new(),
+            repo: String::new(),
+        }),
     }
 }
 

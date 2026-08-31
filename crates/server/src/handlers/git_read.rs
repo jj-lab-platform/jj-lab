@@ -1,7 +1,6 @@
 use crate::*;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
@@ -11,15 +10,15 @@ pub async fn commit_info(
     Path((org, repo, sha)): Path<(String, String, String)>,
 ) -> Response {
     let store = state.store.clone();
-    let r = tokio::task::spawn_blocking(move || {
+    let info = match run_jj(move || {
         pollster::block_on(jjlab_git::read::commit_by_sha(&store, &org, &repo, &sha))
     })
-    .await;
-    match r {
-        Ok(Ok(info)) => Json(json!(info)).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    .await
+    {
+        Ok(i) => i,
+        Err(resp) => return resp,
+    };
+    Json(json!(info)).into_response()
 }
 
 pub async fn list_branches(
@@ -27,15 +26,15 @@ pub async fn list_branches(
     Path((org, repo)): Path<(String, String)>,
 ) -> Response {
     let store = state.store.clone();
-    let r = tokio::task::spawn_blocking(move || {
+    let branches = match run_jj(move || {
         pollster::block_on(jjlab_git::read::branches(&store, &org, &repo))
     })
-    .await;
-    match r {
-        Ok(Ok(branches)) => Json(json!({ "branches": branches })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    .await
+    {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "branches": branches })).into_response()
 }
 
 pub async fn raw_file(
@@ -43,14 +42,13 @@ pub async fn raw_file(
     Path((org, repo, path)): Path<(String, String, String)>,
 ) -> Response {
     let store = state.store.clone();
-    let r = tokio::task::spawn_blocking(move || {
+    match run_jj(move || {
         pollster::block_on(jjlab_git::read::raw_at_head(&store, &org, &repo, &path))
     })
-    .await;
-    match r {
-        Ok(Ok(bytes)) => bytes.into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    .await
+    {
+        Ok(bytes) => bytes.into_response(),
+        Err(resp) => resp,
     }
 }
 
@@ -59,15 +57,15 @@ pub async fn tree_at_sha(
     Path((org, repo, sha)): Path<(String, String, String)>,
 ) -> Response {
     let store = state.store.clone();
-    let r = tokio::task::spawn_blocking(move || {
+    let entries = match run_jj(move || {
         pollster::block_on(jjlab_git::read::tree_at_sha(&store, &org, &repo, &sha))
     })
-    .await;
-    match r {
-        Ok(Ok(entries)) => Json(json!({ "tree": entries })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    .await
+    {
+        Ok(e) => e,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "tree": entries })).into_response()
 }
 
 // ── jj-native: change addressed read ──
@@ -77,7 +75,7 @@ pub async fn change_info(
     Path((org, repo, change_id)): Path<(String, String, String)>,
 ) -> Response {
     let store = state.store.clone();
-    let r = tokio::task::spawn_blocking(move || {
+    let info = match run_jj(move || {
         pollster::block_on(jjlab_git::read::change_info(
             &store,
             &org,
@@ -85,10 +83,10 @@ pub async fn change_info(
             &change_id,
         ))
     })
-    .await;
-    match r {
-        Ok(Ok(info)) => Json(json!(info)).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    .await
+    {
+        Ok(i) => i,
+        Err(resp) => return resp,
+    };
+    Json(json!(info)).into_response()
 }

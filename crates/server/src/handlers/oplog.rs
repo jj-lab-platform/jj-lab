@@ -1,7 +1,6 @@
 use crate::*;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
@@ -37,7 +36,9 @@ pub async fn subscribe_ops(
         let mut seen = after;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            let Ok(rows) = db.list_op_log(&repo_id) else { continue };
+            let db2 = db.clone();
+            let rid = repo_id.clone();
+            let Ok(rows) = db2.run(move |db| db.list_op_log(&rid)).await else { continue };
             let start = rows.iter().position(|r| Some(&r.id) == seen.as_ref()).map(|i| i + 1).unwrap_or(0);
             for ev in rows.into_iter().skip(start) {
                 seen = Some(ev.id.clone());
@@ -66,20 +67,20 @@ pub async fn undo_op(
 ) -> Response {
     let store = state.store.clone();
     let db = state.db.clone();
-    let r = tokio::task::spawn_blocking(move || {
+    let ev = match run_jj(move || {
         pollster::block_on(jjlab_git::ops::undo_operation(&store, &db, &org, &repo, &op_id))
     })
-    .await;
-    match r {
-        Ok(Ok(ev)) => Json(json!({
-            "ok": true,
-            "undo_op_id": ev.id,
-            "undo_of": ev.undo_of,
-        }))
-        .into_response(),
-        Ok(Err(e)) => json_err(StatusCode::CONFLICT, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    .await
+    {
+        Ok(ev) => ev,
+        Err(resp) => return resp,
+    };
+    Json(json!({
+        "ok": true,
+        "undo_op_id": ev.id,
+        "undo_of": ev.undo_of,
+    }))
+    .into_response()
 }
 
 pub async fn op_head(
@@ -87,13 +88,13 @@ pub async fn op_head(
     Path((org, repo)): Path<(String, String)>,
 ) -> Response {
     let store = state.store.clone();
-    let r = tokio::task::spawn_blocking(move || {
+    let id = match run_jj(move || {
         pollster::block_on(jjlab_git::ops::current_op_id(&store, &org, &repo))
     })
-    .await;
-    match r {
-        Ok(Ok(id)) => Json(json!({ "op_id": id })).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    .await
+    {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "op_id": id })).into_response()
 }
