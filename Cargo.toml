@@ -55,7 +55,6 @@ pkglab-swift = { path = "crates/pkglab/pkglab-swift" }
 pkglab-conan = { path = "crates/pkglab/pkglab-conan" }
 
 # --- shared ---
-parking_lot = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

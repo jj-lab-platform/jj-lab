@@ -44,7 +44,6 @@ http.workspace = true
 async-trait.workspace = true
 async-stream.workspace = true
 tokio-util = { version = "0.7", features = ["io"] }
-parking_lot.workspace = true
 pollster = "1.0"
 include_dir.workspace = true
 rustls.workspace = true

@@ -2397,7 +2397,8 @@ dependencies = [
 name = "jjlab-core"
 version = "0.1.0"
 dependencies = [
- "parking_lot",
+ "r2d2",
+ "r2d2_sqlite",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2455,7 +2456,6 @@ dependencies = [
  "jjlab-core",
  "jjlab-git",
  "jjlab-proto",
- "parking_lot",
  "pkglab-cargo",
  "pkglab-common",
  "pkglab-composer",

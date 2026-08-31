@@ -3,16 +3,17 @@
 //! jj-lib; this store holds only the relational metadata and the git-sha →
 //! change-id mapping that keeps change-ids stable across force-push/amend.
 
-use parking_lot::Mutex;
+use std::sync::Arc;
+
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
 use rusqlite::OptionalExtension as _;
-use std::sync::Arc;
 
 use crate::{Error, Result};
 
 #[derive(Clone)]
 pub struct Db {
-    conn: Arc<Mutex<Connection>>,
+    pool: Arc<r2d2::Pool<SqliteConnectionManager>>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,24 +175,29 @@ impl Db {
             std::fs::create_dir_all(dir)
                 .map_err(|e| Error::Db(format!("db mkdir: {e}")))?;
         }
-        let conn =
-            Connection::open(path).map_err(|e| Error::Db(format!("db open: {e}")))?;
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .map_err(|e| Error::Db(format!("db wal: {e}")))?;
-        conn.pragma_update(None, "foreign_keys", "ON")
-            .map_err(|e| Error::Db(format!("db fk: {e}")))?;
-        conn.pragma_update(None, "busy_timeout", 5000)
-            .map_err(|e| Error::Db(format!("db busy: {e}")))?;
-        conn.execute_batch(SCHEMA)
-            .map_err(|e| Error::Db(format!("db schema: {e}")))?;
-        migrate(&conn)?;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        let manager = SqliteConnectionManager::file(path).with_init(|c| {
+            c.pragma_update(None, "journal_mode", "WAL")?;
+            c.pragma_update(None, "foreign_keys", "ON")?;
+            c.pragma_update(None, "busy_timeout", 5000)?;
+            Ok(())
+        });
+        let pool = r2d2::Pool::builder()
+            .max_size(8)
+            .build(manager)
+            .map_err(|e| Error::Db(format!("db pool: {e}")))?;
+        {
+            let conn = pool
+                .get()
+                .map_err(|e| Error::Db(format!("db get: {e}")))?;
+            conn.execute_batch(SCHEMA)
+                .map_err(|e| Error::Db(format!("db schema: {e}")))?;
+            migrate(&conn)?;
+        }
+        Ok(Self { pool: Arc::new(pool) })
     }
 
     pub fn upsert_org(&self, org_id: &str, name: &str) -> Result<()> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(
             "INSERT INTO orgs (id, name) VALUES (?1, ?2)
              ON CONFLICT (id) DO UPDATE SET name = excluded.name",
@@ -209,7 +215,7 @@ impl Db {
         default_bookmark: &str,
         git_url: Option<&str>,
     ) -> Result<()> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(
             "INSERT INTO repos (id, org_id, name, default_bookmark, git_url)
              VALUES (?1, ?2, ?3, ?4, ?5)
@@ -223,7 +229,7 @@ impl Db {
     }
 
     pub fn get_repo(&self, id: &str) -> Result<Option<RepoRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, org_id, name, default_bookmark, git_url
@@ -252,7 +258,7 @@ impl Db {
     /// tables whose FK doesn't define ON DELETE CASCADE). Also removes the org
     /// row when it has no more repos.
     pub fn delete_repo(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let org_id: String = match conn
             .query_row(
                 "SELECT org_id FROM repos WHERE id = ?1",
@@ -354,7 +360,7 @@ impl Db {
     /// the `ON UPDATE CASCADE` foreign keys. Returns the collision/not-found
     /// status so the caller can map to 409/404.
     pub fn rename_repo(&self, old_id: &str, new_id: &str) -> Result<RenameOutcome> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let exists: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM repos WHERE id = ?1)",
@@ -386,7 +392,7 @@ impl Db {
 
     /// All orgs as `(id, name)` pairs, ordered by name.
     pub fn list_orgs(&self) -> Result<Vec<(String, String)>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
             .prepare("SELECT id, name FROM orgs ORDER BY name")
             .map_err(|e| Error::Db(format!("list orgs prepare: {e}")))?;
@@ -399,7 +405,7 @@ impl Db {
 
     /// All repos (across orgs) ordered by id.
     pub fn list_repos(&self) -> Result<Vec<RepoRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, org_id, name, default_bookmark, git_url
@@ -422,7 +428,7 @@ impl Db {
     }
 
     pub fn upsert_change(&self, r: &ChangeRow) -> Result<()> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(
             "INSERT INTO changes (change_id, repo_id, description, author, committer,
                git_commit_sha)
@@ -443,7 +449,7 @@ impl Db {
     }
 
     pub fn get_change(&self, change_id: &str) -> Result<Option<ChangeRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
             .prepare(
                 "SELECT change_id, repo_id, description, author, committer, git_commit_sha
@@ -476,7 +482,7 @@ impl Db {
         change_id: &str,
         is_remote: bool,
     ) -> Result<()> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(
             "INSERT INTO bookmarks (repo_id, name, change_id, is_remote)
              VALUES (?1, ?2, ?3, ?4)
@@ -489,7 +495,7 @@ impl Db {
     }
 
     pub fn get_bookmark(&self, repo_id: &str, name: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
             .prepare("SELECT change_id FROM bookmarks WHERE repo_id = ?1 AND name = ?2")
             .map_err(|e| Error::Db(format!("get bookmark prepare: {e}")))?;
@@ -504,7 +510,7 @@ impl Db {
     }
 
     pub fn list_bookmarks(&self, repo_id: &str) -> Result<Vec<BookmarkRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
             .prepare("SELECT name, change_id, is_remote FROM bookmarks WHERE repo_id = ?1")
             .map_err(|e| Error::Db(format!("list bookmarks prepare: {e}")))?;
@@ -525,7 +531,7 @@ impl Db {
     }
 
     pub fn list_conflicts(&self, repo_id: &str) -> Result<Vec<ConflictRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, repo_id, change_id, path, adds, removes
@@ -560,7 +566,7 @@ impl Db {
         change_id: &str,
         commit_id: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(
             "INSERT INTO change_id_map (repo_id, git_commit_sha, change_id, commit_id)
              VALUES (?1, ?2, ?3, ?4)
@@ -574,7 +580,7 @@ impl Db {
 
     /// Look up a git-sha anchor. Returns `None` if not yet anchored.
     pub fn lookup_anchor(&self, repo_id: &str, git_commit_sha: &str) -> Result<Option<AnchorRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
             .prepare(
                 "SELECT change_id, commit_id FROM change_id_map
@@ -605,7 +611,7 @@ impl Db {
         adds: &str,
         removes: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(
             "INSERT INTO conflicts (id, repo_id, change_id, path, adds, removes)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -617,7 +623,7 @@ impl Db {
     }
 
     pub fn append_op_log(&self, r: &OpLogRow) -> Result<()> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(
             "INSERT INTO op_log (id, repo_id, op_type, payload, undo_of)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -628,7 +634,7 @@ impl Db {
     }
 
     pub fn list_op_log(&self, repo_id: &str) -> Result<Vec<OpLogRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, repo_id, op_type, payload, undo_of
@@ -668,7 +674,7 @@ pub fn create_mr(
     head_branch: Option<&str>,
     base_rev: &str,
 ) -> Result<MrRow> {
-    let conn = self.conn.lock();
+    let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
     let number: i64 = conn
         .query_row(
             "SELECT COALESCE(MAX(number), 0) + 1 FROM merge_requests WHERE repo_id = ?1",
@@ -722,7 +728,7 @@ fn get_mr_from(conn: &Connection, id: i64) -> Result<MrRow> {
 }
 
 pub fn list_mrs(&self, repo_id: &str, state: Option<&str>) -> Result<Vec<MrRow>> {
-    let conn = self.conn.lock();
+    let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
     let (sql, number_filter): (&str, Option<&str>) = match state {
         Some(st) => (
             "SELECT id FROM merge_requests WHERE repo_id = ?1 AND state = ?2 ORDER BY number",
@@ -751,7 +757,7 @@ pub fn list_mrs(&self, repo_id: &str, state: Option<&str>) -> Result<Vec<MrRow>>
 }
 
 pub fn get_mr_by_number(&self, repo_id: &str, number: i64) -> Result<Option<MrRow>> {
-    let conn = self.conn.lock();
+    let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
     let id: Option<i64> = conn
         .query_row(
             "SELECT id FROM merge_requests WHERE repo_id = ?1 AND number = ?2",
@@ -774,7 +780,7 @@ pub fn update_mr(
     head_change_id: Option<&str>,
     head_sha: Option<&str>,
 ) -> Result<MrRow> {
-    let conn = self.conn.lock();
+    let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
     if let Some(st) = state {
         conn.execute(
             "UPDATE merge_requests SET state = ?2, updated_at = strftime('%Y-%m-%d %H:%M:%S','now') WHERE id = ?1",
@@ -807,7 +813,7 @@ pub fn add_mr_review(
     body: &str,
     commit_sha: Option<&str>,
 ) -> Result<MrReviewRow> {
-    let conn = self.conn.lock();
+    let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
     conn.execute(
         "INSERT INTO mr_reviews (mr_id, reviewer, state, body, commit_sha) VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![mr_id, reviewer, state, body, commit_sha],
@@ -832,7 +838,7 @@ pub fn add_mr_review(
 }
 
 pub fn list_mr_reviews(&self, mr_id: i64) -> Result<Vec<MrReviewRow>> {
-    let conn = self.conn.lock();
+    let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
     let mut stmt = conn
         .prepare("SELECT id, mr_id, reviewer, state, body, commit_sha FROM mr_reviews WHERE mr_id = ?1 ORDER BY id")
         .map_err(|e| Error::Db(format!("list mr reviews: {e}")))?;
@@ -863,7 +869,7 @@ pub fn add_mr_comment(
     path: Option<&str>,
     commit_sha: Option<&str>,
 ) -> Result<MrCommentRow> {
-    let conn = self.conn.lock();
+    let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
     conn.execute(
         "INSERT INTO mr_comments (mr_id, author, body, path, commit_sha) VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![mr_id, author, body, path, commit_sha],
@@ -888,7 +894,7 @@ pub fn add_mr_comment(
 }
 
 pub fn list_mr_comments(&self, mr_id: i64) -> Result<Vec<MrCommentRow>> {
-    let conn = self.conn.lock();
+    let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
     let mut stmt = conn
         .prepare("SELECT id, mr_id, author, body, path, commit_sha FROM mr_comments WHERE mr_id = ?1 ORDER BY id")
         .map_err(|e| Error::Db(format!("list mr comments: {e}")))?;
@@ -913,7 +919,7 @@ pub fn list_mr_comments(&self, mr_id: i64) -> Result<Vec<MrCommentRow>> {
 
 /// Open MRs as (id, head_change_id, head_branch) for force-push re-association.
 pub fn list_open_mrs_for_reassoc(&self) -> Result<Vec<(i64, String, Option<String>)>> {
-    let conn = self.conn.lock();
+    let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
     let mut stmt = conn
         .prepare("SELECT id, head_change_id, head_branch FROM merge_requests WHERE state = 'open'")
         .map_err(|e| Error::Db(format!("list open mrs: {e}")))?;
@@ -952,7 +958,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
         draft: bool,
         prerelease: bool,
     ) -> Result<ReleaseRow> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(
             "INSERT INTO releases (repo_id, tag_name, name, body, draft, prerelease)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -987,7 +993,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 
     pub fn list_releases(&self, repo_id: &str) -> Result<Vec<ReleaseRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
             .prepare("SELECT id FROM releases WHERE repo_id = ?1 ORDER BY created_at DESC, id DESC")
             .map_err(|e| Error::Db(format!("list releases: {e}")))?;
@@ -1000,7 +1006,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 
     pub fn get_release_by_tag(&self, repo_id: &str, tag: &str) -> Result<Option<ReleaseRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let id: Option<i64> = conn
             .query_row(
                 "SELECT id FROM releases WHERE repo_id = ?1 AND tag_name = ?2",
@@ -1016,7 +1022,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 
     pub fn delete_release(&self, id: i64) -> Result<()> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute("DELETE FROM releases WHERE id = ?1", [id])
             .map_err(|e| Error::Db(format!("delete release: {e}")))?;
         Ok(())
@@ -1030,7 +1036,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
         digest: &str,
         content_type: &str,
     ) -> Result<ReleaseAssetRow> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(
             "INSERT INTO release_assets (release_id, name, size, digest, content_type)
              VALUES (?1, ?2, ?3, ?4, ?5)
@@ -1060,7 +1066,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 
     pub fn list_release_assets(&self, release_id: i64) -> Result<Vec<ReleaseAssetRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
             .prepare("SELECT id, release_id, name, size, digest, content_type
                       FROM release_assets WHERE release_id = ?1 ORDER BY id")
@@ -1085,7 +1091,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 
     pub fn get_release_asset(&self, release_id: i64, name: &str) -> Result<Option<ReleaseAssetRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.query_row(
             "SELECT id, release_id, name, size, digest, content_type
              FROM release_assets WHERE release_id = ?1 AND name = ?2",
@@ -1106,7 +1112,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 
     pub fn delete_release_asset(&self, release_id: i64, name: &str) -> Result<()> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(
             "DELETE FROM release_assets WHERE release_id = ?1 AND name = ?2",
             rusqlite::params![release_id, name],
@@ -1125,7 +1131,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
         trigger: &str,
         enabled: bool,
     ) -> Result<i64> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(
             "INSERT INTO workflows (repo_id, name, path, trigger, enabled)
              VALUES (?1, ?2, ?3, ?4, ?5)
@@ -1138,7 +1144,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 
     pub fn list_workflows(&self, repo_id: &str) -> Result<Vec<WorkflowRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
             .prepare("SELECT id, repo_id, name, path, trigger, enabled FROM workflows WHERE repo_id = ?1 ORDER BY id")
             .map_err(|e| Error::Db(format!("list workflows: {e}")))?;
@@ -1162,7 +1168,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 
     pub fn get_workflow(&self, id: i64) -> Result<Option<WorkflowRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.query_row(
             "SELECT id, repo_id, name, path, trigger, enabled FROM workflows WHERE id = ?1",
             [id],
@@ -1182,7 +1188,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 
     pub fn create_run(&self, repo_id: &str, workflow_id: i64, trigger_ref: &str) -> Result<i64> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(
             "INSERT INTO runs (repo_id, workflow_id, trigger_ref) VALUES (?1, ?2, ?3)",
             rusqlite::params![repo_id, workflow_id, trigger_ref],
@@ -1192,7 +1198,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 
     pub fn set_run_status(&self, id: i64, status: &str) -> Result<()> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let finished: Option<&str> = if status == "success" || status == "failure" {
             Some("now")
         } else {
@@ -1215,7 +1221,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 
     pub fn get_run(&self, id: i64) -> Result<Option<RunRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.query_row(
             "SELECT id, repo_id, workflow_id, trigger_ref, status FROM runs WHERE id = ?1",
             [id],
@@ -1234,7 +1240,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 
     pub fn list_runs(&self, repo_id: &str) -> Result<Vec<RunRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
             .prepare("SELECT id, repo_id, workflow_id, trigger_ref, status FROM runs WHERE repo_id = ?1 ORDER BY id DESC")
             .map_err(|e| Error::Db(format!("list runs: {e}")))?;
@@ -1258,7 +1264,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
 
     /// Runs still waiting to be executed by the CI scheduler, oldest first.
     pub fn pending_runs(&self) -> Result<Vec<RunRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, repo_id, workflow_id, trigger_ref, status
@@ -1300,7 +1306,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
         timeout_seconds: Option<i64>,
         build_spec: Option<&str>,
     ) -> Result<i64> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(
             "INSERT INTO jobs (run_id, name, status, log_path, image, run, timeout_seconds, build_spec)
                  VALUES (?1, ?2, 'queued', ?3, ?4, ?5, ?6, ?7)",
@@ -1311,7 +1317,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 
     pub fn set_job_status(&self, id: i64, status: &str, exit_code: Option<i32>) -> Result<()> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let finished: bool = status == "success" || status == "failure";
         if finished {
             conn.execute(
@@ -1330,7 +1336,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 
     pub fn get_job(&self, id: i64) -> Result<Option<JobRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.query_row(
             "SELECT id, run_id, name, status, exit_code, log_path, image, run, timeout_seconds, build_spec
                  FROM jobs WHERE id = ?1",
@@ -1355,7 +1361,7 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 
     pub fn list_jobs(&self, run_id: i64) -> Result<Vec<JobRow>> {
-        let conn = self.conn.lock();
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
             .prepare("SELECT id, run_id, name, status, exit_code, log_path, image, run, timeout_seconds, build_spec FROM jobs WHERE run_id = ?1 ORDER BY id")
             .map_err(|e| Error::Db(format!("list jobs: {e}")))?;
@@ -1651,7 +1657,7 @@ mod tests {
         assert_eq!(db.list_mr_reviews(mr.id).unwrap().len(), 1);
         assert_eq!(db.list_mr_comments(mr.id).unwrap().len(), 1);
         // Delete via raw SQL on parent (no delete_mr API — cascade proves FK).
-        let conn = db.conn.lock();
+        let conn = db.pool.get().unwrap();
         conn.execute("DELETE FROM merge_requests WHERE id = ?1", [mr.id]).unwrap();
         drop(conn);
         assert!(db.list_mr_reviews(mr.id).unwrap().is_empty());
@@ -1771,7 +1777,7 @@ mod tests {
         let w = db.upsert_workflow(&id, "CI", "p", "push", true).unwrap();
         let run = db.create_run(&id, w, "sha").unwrap();
         db.create_job(run, "j", "/tmp/l").unwrap();
-        let conn = db.conn.lock();
+        let conn = db.pool.get().unwrap();
         conn.execute("DELETE FROM runs WHERE id = ?1", [run]).unwrap();
         drop(conn);
         assert!(db.list_jobs(run).unwrap().is_empty());
