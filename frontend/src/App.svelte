@@ -1,20 +1,21 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount } from 'svelte'
   import * as Input from '$lib/components/ui/input'
   import * as Textarea from '$lib/components/ui/textarea'
   import * as Skeleton from '$lib/components/ui/skeleton'
   import * as Dialog from '$lib/components/ui/dialog'
   import * as NativeSelect from '$lib/components/ui/native-select'
-  import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import CodeView from '$lib/components/CodeView.svelte'
   import DiffView from '$lib/components/DiffView.svelte'
   import Markdown from '$lib/components/Markdown.svelte'
   import TreeNode, { type TreeEntry } from '$lib/components/TreeNode.svelte'
+  import ThemeMenu from '$lib/components/ThemeMenu.svelte'
+  import TokenMenu from '$lib/components/TokenMenu.svelte'
   import {
-    ChevronRight, GitBranch, BookOpen, Network, Folder, Download,
-    GitPullRequest, Tag, Rocket, Play, Settings, Copy, Plus,
-    History, GitFork, KeyRound, Check, GitCommit, AlertTriangle,
-    Palette, Moon, Sun, File,
+    ChevronRight, GitBranch, BookOpen, Folder, Download,
+    GitPullRequest, Tag, Play, Copy, Plus,
+    History, AlertTriangle,
+    File,
   } from '@lucide/svelte'
   import {
     fetchOrgs, fetchBranches, fetchTags, fetchCommits, fetchCommit, fetchChange,
@@ -25,42 +26,16 @@
     updateMrState, fetchReviews, addReview, fetchComments, addComment, fetchMrDiff,
     fetchReleases, createRelease, deleteRelease, fetchWorkflows, dispatchWorkflow,
     fetchRuns, fetchJobs, fetchJobLogs, archiveUrl, cloneUrls, decodeContent,
-    setToken, getToken, ApiError,
     type Org, type CommitInfo, type BranchInfo, type GraphNode, type Mr,
     type MrReview, type MrComment, type Release, type Workflow, type Run, type Job,
     type OpLogEntry, type Conflict, type DbBookmark, type SearchHit,
   } from '$lib/api'
   import { parseDiff } from '$lib/diff-parser'
-import {
-  ALL_THEMES,
-  applyTheme,
-  getSavedMode,
-  getSavedTheme,
-  isDarkOnlyTheme,
-} from '$lib/stores/theme.svelte'
-import { themeData } from '$lib/stores/themes-data'
-
-  // ── routing model ──
-  type Tab =
-    | 'files' | 'commits' | 'branches' | 'graph' | 'changes'
-    | 'op-log' | 'pulls' | 'releases' | 'actions' | 'settings'
-
-  const TABS: { id: Tab; label: string; icon: unknown }[] = [
-    { id: 'files', label: 'Code', icon: BookOpen },
-    { id: 'commits', label: 'Commits', icon: GitCommit },
-    { id: 'branches', label: 'Branches', icon: GitBranch },
-    { id: 'graph', label: 'Graph', icon: Network },
-    { id: 'changes', label: 'Changes', icon: GitFork },
-    { id: 'op-log', label: 'Op-log', icon: History },
-    { id: 'pulls', label: 'Pulls', icon: GitPullRequest },
-    { id: 'releases', label: 'Releases', icon: Rocket },
-    { id: 'actions', label: 'Actions', icon: Play },
-    { id: 'settings', label: 'Settings', icon: Settings },
-  ]
+  import { LANE_COLORS, layoutGraph } from '$lib/graph-layout'
+  import { TABS, type Tab, type Route } from '$lib/route'
 
   // route state
-  let route: { org: string | null; repo: string | null; tab: Tab; sub: string; sub2: string } =
-    $state({ org: null, repo: null, tab: 'files' as Tab, sub: '', sub2: '' })
+  let route: Route = $state({ org: null, repo: null, tab: 'files', sub: '', sub2: '' })
 
   let error: string | null = $state(null)
   let notice: string | null = $state(null)
@@ -621,60 +596,6 @@ import { themeData } from '$lib/stores/themes-data'
     jobLogText = await fetchJobLogs(org, repo, jobId)
   }
 
-  // ── theme ──
-  let currentTheme = $state(
-    typeof localStorage !== 'undefined' ? getSavedTheme() : 'opencode',
-  )
-  let themeMode = $state<'dark' | 'light'>(
-    typeof localStorage !== 'undefined' ? getSavedMode() : 'dark',
-  )
-  const themeLabels: Record<string, string> = {
-    opencode: 'OpenCode',
-    tokyonight: 'Tokyo Night',
-    everforest: 'Everforest',
-    catppuccin: 'Catppuccin',
-    'catppuccin-frappe': 'Catppuccin Frappé',
-    'catppuccin-macchiato': 'Catppuccin Macchiato',
-    ayu: 'Ayu',
-    aura: 'Aura',
-    nord: 'Nord',
-    gruvbox: 'Gruvbox',
-    kanagawa: 'Kanagawa',
-    matrix: 'Matrix',
-    'one-dark': 'One Dark',
-    carbonfox: 'Carbonfox',
-    cobalt2: 'Cobalt2',
-    cursor: 'Cursor',
-    dracula: 'Dracula',
-    flexoki: 'Flexoki',
-    github: 'GitHub',
-    'lucent-orng': 'Lucent Orange',
-    material: 'Material',
-    mercury: 'Mercury',
-    monokai: 'Monokai',
-    nightowl: 'Night Owl',
-    orng: 'Orange',
-    'osaka-jade': 'Osaka Jade',
-    palenight: 'Palenight',
-    rosepine: 'Rose Pine',
-    solarized: 'Solarized',
-    synthwave84: 'Synthwave 84',
-    vercel: 'Vercel',
-    vesper: 'Vesper',
-    zenburn: 'Zenburn',
-  }
-  const darkOnly = $derived(isDarkOnlyTheme(currentTheme))
-
-  function pickTheme(tid: string): void {
-    currentTheme = tid
-    applyTheme(tid, themeMode)
-  }
-
-  function toggleMode(): void {
-    themeMode = themeMode === 'dark' ? 'light' : 'dark'
-    applyTheme(currentTheme, themeMode)
-  }
-
   // ── token ──
   let cloneCopied = $state(false)
 
@@ -710,47 +631,6 @@ import { themeData } from '$lib/stores/themes-data'
       /* clipboard unavailable */
     }
   }
-
-  // ── graph layout ──
-  function layoutGraph(nodes: GraphNode[]): { rows: { node: GraphNode; lane: number }[]; lanes: number } {
-    const active: Array<string | null> = []
-    const rows: { node: GraphNode; lane: number }[] = []
-    const rowOf = new Map<string, number>()
-    nodes.forEach((n, i) => rowOf.set(n.commit_id, i))
-    nodes.forEach((node) => {
-      let lane = active.indexOf(node.commit_id)
-      if (lane === -1) {
-        lane = active.indexOf(null)
-        if (lane === -1) {
-          active.push(node.commit_id)
-          lane = active.length - 1
-        } else {
-          active[lane] = node.commit_id
-        }
-      } else {
-        active[lane] = null
-      }
-      // first parent inherits lane; others claim a free lane
-      node.parents.forEach((pid, idx) => {
-        if (idx === 0) {
-          const existing = active.indexOf(pid)
-          if (existing === -1) active[lane] = pid
-          else active[lane] = null
-        } else {
-          const existing = active.indexOf(pid)
-          if (existing === -1) {
-            const free = active.indexOf(null)
-            if (free === -1) active.push(pid)
-            else active[free] = pid
-          }
-        }
-      })
-      rows.push({ node, lane })
-    })
-    return { rows, lanes: Math.max(1, ...rows.map(r => r.lane + 1)) }
-  }
-
-  const LANE_COLORS = ['#54aeff', '#f778ba', '#3fb950', '#d29922', '#ab7df8', '#39c5cf', '#ff7b72', '#7ee787']
 
   // ── lifecycle ──
   function applyRoute(): void {
@@ -841,66 +721,9 @@ import { themeData } from '$lib/stores/themes-data'
         </a>
       {/if}
 
-      <!-- theme -->
-      <DropdownMenu.Root>
-        <DropdownMenu.Trigger>
-          {#snippet child({ props })}
-            <button {...props} class="g-nav-item" title="Theme">
-              <Palette class="size-4" />
-            </button>
-          {/snippet}
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Content align="end" class="w-72 p-2">
-          <DropdownMenu.Label>Theme</DropdownMenu.Label>
-          <div class="flex gap-2 px-2 py-1">
-            <select
-              class="h-8 flex-1 rounded border border-[var(--gitea-input-border)] bg-[var(--gitea-input-bg)] px-2 text-xs"
-              value={currentTheme}
-              onchange={(e) => pickTheme(e.currentTarget.value)}
-            >
-              {#each ALL_THEMES as tid (tid)}
-                <option value={tid}>{themeLabels[tid] ?? tid}</option>
-              {/each}
-            </select>
-            <button class="g-btn small" disabled={darkOnly} onclick={toggleMode} title={darkOnly ? 'Theme is dark-only' : 'Toggle light/dark'}>
-              {#if themeMode === 'dark'}<Sun class="size-3.5" />{:else}<Moon class="size-3.5" />{/if}
-            </button>
-          </div>
-          <div class="mt-2 max-h-64 overflow-y-auto px-2 pb-1">
-            {#each ALL_THEMES as tid (tid)}
-              <button
-                type="button"
-                class={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-muted ${tid === currentTheme ? 'ring-1 ring-primary/40' : ''}`}
-                onclick={() => pickTheme(tid)}
-              >
-                <span class="size-3 shrink-0 rounded-full border border-border" style={`background:${themeData[tid]?.dark?.primary ?? '#888'}`}></span>
-                <span class="truncate">{themeLabels[tid] ?? tid}</span>
-                {#if tid === currentTheme}<Check class="ml-auto size-3.5 shrink-0" />{/if}
-              </button>
-            {/each}
-          </div>
-        </DropdownMenu.Content>
-      </DropdownMenu.Root>
+      <ThemeMenu />
 
-      <!-- token -->
-      <DropdownMenu.Root>
-        <DropdownMenu.Trigger>
-          {#snippet child({ props })}
-            <button {...props} class="g-nav-item" title="Access token">
-              <KeyRound class="size-4" />
-            </button>
-          {/snippet}
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Content align="end">
-          <DropdownMenu.Label>Access token</DropdownMenu.Label>
-          <div class="px-2 py-1">
-            <Input.Root id="tok" type="password" value={getToken() ?? ''} oninput={(e) => setToken((e.target as HTMLInputElement).value || null)} />
-          </div>
-          <DropdownMenu.Label class="text-[11px] font-normal text-muted-foreground">
-            Stored in localStorage; sent as <code>Authorization: token</code>.
-          </DropdownMenu.Label>
-        </DropdownMenu.Content>
-      </DropdownMenu.Root>
+      <TokenMenu />
     </div>
   </nav>
 
@@ -991,10 +814,9 @@ import { themeData } from '$lib/stores/themes-data'
       <!-- Gitea tab bar (secondary pointing menu) -->
       <nav class="g-tabs">
         {#each TABS as t (t.id)}
-          {@const Icon = t.icon as typeof GitBranch}
           <a href={`#/${encodeURIComponent(route.org!)}/${encodeURIComponent(route.repo!)}${t.id === 'files' ? '' : '/' + t.id}`}
              class={`g-tab ${route.tab === t.id ? 'active' : ''}`} aria-current={route.tab === t.id ? 'page' : undefined}>
-            <Icon class="size-4" /> {t.label}
+            {t.label}
             {#if t.id === 'pulls' && mrs.length > 0}<span class="g-count">{mrs.length}</span>{/if}
           </a>
         {/each}
