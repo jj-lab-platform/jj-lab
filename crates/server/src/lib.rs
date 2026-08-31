@@ -31,6 +31,8 @@ pub struct AppState {
     pub tokens: Arc<Vec<(String, Level)>>,
     pub assets: Arc<pkglab_core::blob::FsBlobStore>,
     pub registry: RegistryHandle,
+    pub namespaces: Arc<jjlab_git::namespaces::NamespaceRegistry>,
+    pub tasks: Arc<jjlab_git::task::TaskRegistry>,
 }
 
 impl AppState {
@@ -40,7 +42,20 @@ impl AppState {
         tokens: Vec<(String, Level)>,
         assets: Arc<pkglab_core::blob::FsBlobStore>,
     ) -> Self {
-        Self { db, store, tokens: Arc::new(tokens), assets, registry: None }
+        Self {
+            db,
+            store,
+            tokens: Arc::new(tokens),
+            assets,
+            registry: None,
+            namespaces: Arc::new(jjlab_git::namespaces::NamespaceRegistry::from_env()),
+            tasks: Arc::new(jjlab_git::task::TaskRegistry::new()),
+        }
+    }
+
+    pub fn with_namespaces(mut self, namespaces: Vec<String>) -> Self {
+        self.namespaces = Arc::new(jjlab_git::namespaces::NamespaceRegistry::new(namespaces));
+        self
     }
 
     pub fn with_registry(mut self, registry: Arc<pkglab_common::Registry>) -> Self {
@@ -164,6 +179,57 @@ pub struct ReleaseBody {
     draft: bool,
     #[serde(default)]
     prerelease: bool,
+}
+
+// ── /ops: orchestration primitives ──
+
+/// One-shot run request (a debug pod that runs to completion and dies).
+#[derive(Deserialize)]
+pub struct RunBody {
+    pub image: String,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default = "default_workdir")]
+    pub workdir: String,
+    #[serde(default)]
+    pub cpu: Option<String>,
+    #[serde(default)]
+    pub memory: Option<String>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub namespace: Option<String>,
+}
+
+fn default_workdir() -> String {
+    "/workspace".to_string()
+}
+
+/// Register a namespace at runtime (write-token gated).
+#[derive(Deserialize)]
+pub struct NamespaceBody {
+    pub namespace: String,
+}
+
+/// Scale a deployment (replicas target).
+#[derive(Deserialize)]
+pub struct ScaleBody {
+    pub replicas: i32,
+    #[serde(default)]
+    pub namespace: Option<String>,
+}
+
+/// Rollback a helm release to a revision.
+#[derive(Deserialize)]
+pub struct RollbackBody {
+    #[serde(default)]
+    pub revision: Option<u32>,
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 // ── auth ──
@@ -504,6 +570,30 @@ pub fn build_router(state: AppState) -> axum::Router {
                 post(undo_op),
             )
             .route("/api/v1/repos/{org}/{repo}/op-head", get(op_head))
+            // Orchestration primitives (/ops): purpose-neutral run/service/
+            // build/helm/namespace operations consumed by the ops-extension.
+            .route("/api/v1/ops/config", get(ops_config))
+            .route("/api/v1/ops/namespaces", get(ops_namespaces).post(register_namespace))
+            .route("/api/v1/ops/runs", post(ops_run))
+            .route("/api/v1/ops/services", get(ops_services_list).post(ops_service_create))
+            .route(
+                "/api/v1/ops/services/{name}",
+                get(ops_service_get)
+                    .delete(ops_service_delete)
+                    .post(ops_service_restart),
+            )
+            .route("/api/v1/ops/services/{name}/scale", post(ops_service_scale))
+            .route("/api/v1/ops/helm/install", post(ops_helm_install))
+            .route("/api/v1/ops/helm/releases", get(ops_helm_list))
+            .route("/api/v1/ops/helm/releases/{name}/status", get(ops_helm_status))
+            .route("/api/v1/ops/helm/releases/{name}/uninstall", post(ops_helm_uninstall))
+            .route("/api/v1/ops/helm/releases/{name}/rollback", post(ops_helm_rollback))
+            .route("/api/v1/ops/builds", post(ops_build))
+            .route("/api/v1/ops/packages", get(ops_packages))
+            .route("/api/v1/ops/images", get(ops_images))
+            .route("/api/v1/ops/tasks", get(ops_tasks_list))
+            .route("/api/v1/ops/tasks/{id}", get(ops_task_get))
+            .route("/api/v1/ops/tasks/{id}/stream", get(ops_task_stream))
             // Inbound Git Smart HTTP (ADR-009): git clone/push straight to jjlab.
             // axum allows one param per segment, so catch the remainder and parse:
             //   /{org}/{repo}.git/info/refs

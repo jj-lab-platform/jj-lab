@@ -2455,6 +2455,8 @@ dependencies = [
  "jjlab-core",
  "jjlab-git",
  "jjlab-proto",
+ "k8s-openapi",
+ "kube",
  "pkglab-cargo",
  "pkglab-common",
  "pkglab-composer",

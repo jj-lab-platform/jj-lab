@@ -34,6 +34,8 @@ pkglab-conan.workspace = true
 
 axum.workspace = true
 tokio.workspace = true
+kube.workspace = true
+k8s-openapi.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
