@@ -5,6 +5,8 @@
 
 pub mod actions;
 pub mod anchor;
+pub mod build;
+pub mod helm;
 pub mod http;
 pub mod ingest;
 pub mod mutation;
@@ -15,6 +17,7 @@ pub mod read;
 pub mod repo;
 pub mod runtime;
 pub mod scheduler;
+pub mod service;
 pub mod settings;
 pub mod sync;
 pub mod task;
