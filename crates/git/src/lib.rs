@@ -8,6 +8,7 @@ pub mod anchor;
 pub mod http;
 pub mod ingest;
 pub mod mutation;
+pub mod namespaces;
 pub mod ops;
 pub mod project;
 pub mod read;
@@ -16,5 +17,6 @@ pub mod runtime;
 pub mod scheduler;
 pub mod settings;
 pub mod sync;
+pub mod task;
 
 pub use repo::RepoStore;
