@@ -893,7 +893,9 @@ pub async fn smart_http_post(
 // ── write surface (D) ──
 
 pub 
-const SERVER_AUTHOR: (&str, &str) = ("zergx", "zergx@dev");
+fn server_author() -> (String, String) {
+    jjlab_git::settings::author_identity()
+}
 
 pub async fn create_repo(
     State(state): State<AppState>,
@@ -902,7 +904,7 @@ pub async fn create_repo(
 ) -> Response {
     let store = state.store.clone();
     let db = state.db.clone();
-    let author = (SERVER_AUTHOR.0.to_string(), SERVER_AUTHOR.1.to_string());
+    let author = server_author();
     let (o2, r2) = (org.clone(), repo.clone());
     match tokio::task::spawn_blocking(move || {
         pollster::block_on(jjlab_git::mutation::create_repo(
@@ -1086,7 +1088,7 @@ pub async fn create_file(
     };
     let store = state.store.clone();
     let db = state.db.clone();
-    let author = (SERVER_AUTHOR.0.to_string(), SERVER_AUTHOR.1.to_string());
+    let author = server_author();
     let branch = body.branch.clone();
     let amend = body.amend;
     match tokio::task::spawn_blocking(move || {
@@ -1131,7 +1133,7 @@ pub async fn update_file(
     };
     let store = state.store.clone();
     let db = state.db.clone();
-    let author = (SERVER_AUTHOR.0.to_string(), SERVER_AUTHOR.1.to_string());
+    let author = server_author();
     let branch = body.branch.clone();
     let amend = body.amend;
     match tokio::task::spawn_blocking(move || {
@@ -1168,7 +1170,7 @@ pub async fn delete_file_handler(
     };
     let store = state.store.clone();
     let db = state.db.clone();
-    let author = (SERVER_AUTHOR.0.to_string(), SERVER_AUTHOR.1.to_string());
+    let author = server_author();
     let branch = body.branch.clone();
     let amend = body.amend;
     match tokio::task::spawn_blocking(move || {
@@ -1393,7 +1395,7 @@ pub async fn create_mr_handler(
         &repo_id,
         &body.title,
         &body.body,
-        SERVER_AUTHOR.0,
+        &server_author().0,
         &head_change_id,
         Some(&head_sha),
         Some(&body.head),
@@ -1467,7 +1469,7 @@ pub async fn add_review(
     };
     match state.db.add_mr_review(
         mr.id,
-        SERVER_AUTHOR.0,
+        &server_author().0,
         &body.state,
         &body.body,
         mr.head_sha.as_deref(),
@@ -1518,7 +1520,7 @@ pub async fn add_comment(
     };
     match state.db.add_mr_comment(
         mr.id,
-        SERVER_AUTHOR.0,
+        &server_author().0,
         &body.body,
         body.path.as_deref(),
         mr.head_sha.as_deref(),

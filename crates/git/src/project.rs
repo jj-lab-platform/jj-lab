@@ -176,16 +176,9 @@ pub async fn project_repo(
         //      header -> re-associate directly.
         //   2. plain-git force-push (no change-id header): fall back to
         //      matching the bookmark name recorded on the MR.
-        let bm_dbg: Vec<String> = repo_arc
-            .view()
-            .local_bookmarks()
-            .map(|(n, t)| format!("{}={}", n.as_str(), t.as_normal().map(|i| i.hex()[..6].to_string()).unwrap_or_default()))
-            .collect();
-        eprintln!("PROJ bookmarks: {:?}", bm_dbg);
         let open_mrs: Vec<(i64, String, Option<String>)> = db
             .list_open_mrs_for_reassoc()
             .map_err(|e| RepoError::Other(e.to_string()))?;
-        eprintln!("PROJ open mrs: {:?}", open_mrs);
         for (mr_id, mr_change_id, mr_branch) in &open_mrs {
             // Only the MR's own head branch may move its head; a blanket
             // change-id match across ALL bookmarks would drag the MR back to

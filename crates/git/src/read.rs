@@ -1089,7 +1089,6 @@ mod unified_tests {
     #[test]
     fn unified_patch_produces_hunks_for_added_line() {
         let out = unified_patch("a.txt", b"line1\n", b"line1\nline2\n");
-        eprintln!("OUT: {out}");
         assert!(out.contains("+line2"), "OUT={out}");
     }
 
@@ -1102,7 +1101,6 @@ mod unified_tests {
             3,
             jj_lib::diff_presentation::LineCompareMode::Exact,
         );
-        eprintln!("HUNK COUNT: {}", hunks.len());
         assert!(!hunks.is_empty());
     }
 }

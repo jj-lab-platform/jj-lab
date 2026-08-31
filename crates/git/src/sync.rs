@@ -211,7 +211,7 @@ pub async fn clone_remote(
         String::from_utf8_lossy(&head_out.stdout).trim().to_string()
     };
 
-    let settings = settings::user_settings("zergx", "zergx@dev").map_err(RepoError::Other)?;
+    let settings = settings::user_settings().map_err(RepoError::Other)?;
 
     pollster::block_on(async {
         let (_workspace, repo_arc) = jj_lib::workspace::Workspace::init_external_git(
@@ -270,7 +270,7 @@ pub async fn fetch_remote(
 ) -> Result<usize, RepoError> {
     validate_url(url).map_err(RepoError::Other)?;
     let handle = store.open(org, repo).await?;
-    let settings = settings::user_settings("zergx", "zergx@dev").map_err(RepoError::Other)?;
+    let settings = settings::user_settings().map_err(RepoError::Other)?;
     let remote_name: jj_lib::ref_name::RemoteNameBuf = remote.to_string().into();
 
     pollster::block_on(async {
@@ -442,7 +442,7 @@ pub async fn import_after_receive(
     repo: &str,
 ) -> Result<(), RepoError> {
     let handle = store.open(org, repo).await?;
-    let settings = settings::user_settings("zergx", "zergx@dev").map_err(RepoError::Other)?;
+    let settings = settings::user_settings().map_err(RepoError::Other)?;
     pollster::block_on(async {
         let mut tx = handle.repo.start_transaction();
         {

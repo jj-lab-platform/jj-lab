@@ -85,7 +85,7 @@ impl RepoStore {
 
     pub async fn open(&self, org: &str, repo: &str) -> RepoResult<RepoHandle> {
         // Serialize only the fallback init; the load path below is read-only.
-        let settings = settings::user_settings("zergx", "zergx@dev")
+        let settings = settings::user_settings()
             .map_err(RepoError::Other)?;
         let path = self.checked_repo_dir(org, repo)?;
         let store_factories = default_backend_factories();
@@ -124,7 +124,7 @@ impl RepoStore {
     async fn init(&self, dir: &std::path::Path) -> RepoResult<()> {
         std::fs::create_dir_all(dir).map_err(|e| RepoError::Other(e.to_string()))?;
         let settings =
-            settings::user_settings("zergx", "zergx@dev").map_err(RepoError::Other)?;
+            settings::user_settings().map_err(RepoError::Other)?;
         jj_lib::workspace::Workspace::init_internal_git(&settings, dir, gix::hash::Kind::Sha1)
             .await
             .map(|_| ())
