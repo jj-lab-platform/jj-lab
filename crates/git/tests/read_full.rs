@@ -96,15 +96,15 @@ async fn resolve_commit_by_full_sha_short_prefix_bookmark_and_root() {
 #[tokio::test]
 async fn commit_log_pagination_and_order() {
     let (_dir, store, [_s1, _s2]) = ctx();
-    let (page1, total) = jjlab_git::read::commit_log(&store, "o", "r", 0, 1).await.unwrap();
+    let (page1, total) = jjlab_git::read::commit_log(&store, "o", "r", None, None, None, 0, 1).await.unwrap();
     assert_eq!(total, 2, "two seed commits");
     assert_eq!(page1.len(), 1);
-    let (page2, _) = jjlab_git::read::commit_log(&store, "o", "r", 1, 1).await.unwrap();
+    let (page2, _) = jjlab_git::read::commit_log(&store, "o", "r", None, None, None, 1, 1).await.unwrap();
     assert_eq!(page2.len(), 1);
     // Pages don't overlap.
     assert_ne!(page1[0].sha, page2[0].sha);
     // Beyond the end → empty.
-    let (empty, _) = jjlab_git::read::commit_log(&store, "o", "r", 5, 1).await.unwrap();
+    let (empty, _) = jjlab_git::read::commit_log(&store, "o", "r", None, None, None, 5, 1).await.unwrap();
     assert!(empty.is_empty());
     // Newest first: second commit is page 1.
     assert_eq!(page1[0].sha, {

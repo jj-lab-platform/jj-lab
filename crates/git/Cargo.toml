@@ -9,6 +9,7 @@ jjlab-core = { path = "../core" }
 
 jj-lib.workspace = true
 gix.workspace = true
+jiff.workspace = true
 pollster = "1.0"
 base64.workspace = true
 serde_yaml.workspace = true

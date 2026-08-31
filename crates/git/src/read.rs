@@ -15,6 +15,28 @@ use jj_lib::repo::{ReadonlyRepo, Repo as _};
 
 use crate::repo::{RepoError, RepoStore};
 
+/// Parse a Gitea-style time bound (`since`/`until`): either an ISO 8601 / RFC
+/// 3339 timestamp or a plain `YYYY-MM-DD` date (midnight UTC), returning
+/// milliseconds since the Unix epoch. Used to filter commit logs.
+pub fn parse_time_bound(s: &str) -> Result<i64, RepoError> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err(RepoError::Invalid("empty time bound".into()));
+    }
+    // Plain date first (jiff's Timestamp parser also accepts RFC3339/ISO8601).
+    if let Ok(date) = s.parse::<jiff::civil::Date>() {
+        let millis = date
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .map(|z| z.timestamp().as_millisecond())
+            .map_err(|e| RepoError::Invalid(format!("invalid date {s:?}: {e}")))?;
+        return Ok(millis);
+    }
+    let ts = s
+        .parse::<jiff::Timestamp>()
+        .map_err(|e| RepoError::Invalid(format!("invalid time bound {s:?}: {e}")))?;
+    Ok(ts.as_millisecond())
+}
+
 /// A commit rendered for JSON output (git-commit addressing).
 #[derive(serde::Serialize)]
 pub struct CommitInfo {
@@ -69,10 +91,11 @@ pub async fn open(store: &Arc<RepoStore>, org: &str, repo: &str) -> Result<Arc<R
     Ok(store.open(org, repo).await?.repo.clone())
 }
 
-/// Line-by-line annotation of a file at a snapshot rev. The rev is a strict
-/// snapshot (sha/bookmark/tag); each line reports the origin commit (jj-native
-/// `annotate`, may be a hidden/amended predecessor) plus that commit's
-/// change-id so a caller can keep operating on the change.
+/// Line-by-line annotation of a file at a snapshot rev. The rev resolves like a
+/// revset symbol (sha/bookmark/tag/change-id, divergent change-id is an error);
+/// each line reports the origin commit (jj-native `annotate`, may be a
+/// hidden/amended predecessor) plus that commit's change-id so a caller can keep
+/// operating on the change.
 pub async fn annotate_file(
     store: &Arc<RepoStore>,
     org: &str,
@@ -81,7 +104,7 @@ pub async fn annotate_file(
     path: &str,
 ) -> Result<Vec<AnnotationLine>, RepoError> {
     let repo = open(store, org, repo).await?;
-    let start = resolve_snapshot(&repo, rev)?;
+    let start = resolve_revset_single(&repo, rev)?;
     let commit = repo
         .store()
         .get_commit(&start)
@@ -146,10 +169,10 @@ pub async fn annotate_file(
     Ok(out)
 }
 
-/// List all changes reachable from a snapshot rev (a rev is a snapshot:
-/// sha/bookmark/tag). Mirrors `commits`/`files` semantics: the change view is
-/// anchored to a rev, so each change-id resolves to a single visible commit in
-/// that rev's history and there is no cross-branch divergence ambiguity.
+/// List all changes reachable from a rev (a revset symbol: sha/bookmark/tag/
+/// change-id). Mirrors `commits`/`files` semantics: the change view is anchored
+/// to a rev, so each change-id resolves to a single visible commit in that
+/// rev's history and there is no cross-branch divergence ambiguity.
 pub async fn list_changes(
     store: &Arc<RepoStore>,
     org: &str,
@@ -161,7 +184,7 @@ pub async fn list_changes(
     // Walk ancestors of the rev's commit; dedupe by change-id (an amend chain
     // has one change-id with only the newest commit visible, so the chain
     // collapses to its current commit naturally).
-    let start = resolve_snapshot(&repo, rev)?;
+    let start = resolve_revset_single(&repo, rev)?;
     let mut stack = vec![start];
     let mut seen_commits = std::collections::HashSet::new();
     let mut seen_changes = std::collections::HashSet::new();
@@ -534,24 +557,39 @@ pub fn list_tree(tree: &MergedTree, base: &str) -> Vec<TreeEntryInfo> {
 
 use futures_util::StreamExt as _;
 
-/// Commit log, newest-first (committer timestamp), paginated.
+/// Commit log, newest-first (committer timestamp), paginated. When `rev` is
+/// `Some`, only ancestors of that snapshot/revset symbol are listed; otherwise
+/// the walk starts from every bookmark tip (git-log semantics). `since`/
+/// `until` are millisecond epoch bounds inclusive.
+#[allow(clippy::too_many_arguments)]
 pub async fn commit_log(
     store: &Arc<RepoStore>,
     org: &str,
     repo: &str,
+    rev: Option<&str>,
+    since: Option<i64>,
+    until: Option<i64>,
     page: usize,
     page_size: usize,
 ) -> Result<(Vec<CommitInfo>, usize), RepoError> {
     let repo = open(store, org, repo).await?;
-    // Walk from bookmark tips (git-log semantics): heads() also contains the
-    // root commit and the working-copy commit, which are not real history.
-    let mut commits: Vec<Commit> = Vec::new();
+    // Walk from the rev's commit when given, otherwise from every bookmark tip.
+    // heads() also contains the root commit and the working-copy commit, which
+    // are not real history.
     let root_id = repo.store().root_commit_id().clone();
-    let mut stack: Vec<CommitId> = repo
-        .view()
-        .local_bookmarks()
-        .filter_map(|(_, t)| t.as_normal().cloned())
-        .collect();
+    let mut stack: Vec<CommitId> = if let Some(rev) = rev {
+        match resolve_revset_single(&repo, rev) {
+            Ok(id) => vec![id],
+            Err(RepoError::NotFound { .. }) => return Ok((Vec::new(), 0)),
+            Err(e) => return Err(e),
+        }
+    } else {
+        repo.view()
+            .local_bookmarks()
+            .filter_map(|(_, t)| t.as_normal().cloned())
+            .collect()
+    };
+    let mut commits: Vec<Commit> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     while let Some(id) = stack.pop() {
         if !seen.insert(id.clone()) {
@@ -561,6 +599,13 @@ pub async fn commit_log(
             continue;
         }
         if let Ok(c) = repo.store().get_commit(&id) {
+            let ts = c.committer().timestamp.timestamp.0;
+            if since.is_some_and(|s| ts < s) {
+                continue;
+            }
+            if until.is_some_and(|u| ts > u) {
+                continue;
+            }
             for p in c.parent_ids() {
                 stack.push(p.clone());
             }
@@ -587,7 +632,7 @@ pub async fn commit_patch(
     sha: &str,
 ) -> Result<String, RepoError> {
     let repo = open(store, org, repo).await?;
-    let id = resolve_snapshot(&repo, sha)?;
+    let id = resolve_revset_single(&repo, sha)?;
     let commit = repo
         .store()
         .get_commit(&id)
@@ -618,7 +663,7 @@ pub async fn commit_patch_merged(
     sha: &str,
 ) -> Result<String, RepoError> {
     let repo = open(store, org, repo).await?;
-    let id = resolve_snapshot(&repo, sha)?;
+    let id = resolve_revset_single(&repo, sha)?;
     let commit = repo
         .store()
         .get_commit(&id)
@@ -914,7 +959,7 @@ pub async fn resolve_rev(
     rev: &str,
 ) -> Result<(String, String), RepoError> {
     let repo = open(store, org, repo).await?;
-    let id = resolve_snapshot(&repo, rev)?;
+    let id = resolve_revset_single(&repo, rev)?;
     let commit = repo
         .store()
         .get_commit(&id)
@@ -1078,7 +1123,7 @@ pub async fn search_code(
     pattern: &str,
 ) -> Result<Vec<String>, RepoError> {
     let repo = open(store, org, repo).await?;
-    let id = resolve_snapshot(&repo, rev)?;
+    let id = resolve_revset_single(&repo, rev)?;
     let commit = repo.store().get_commit(&id).map_err(|e| RepoError::Other(e.to_string()))?;
     // Walk the tree and line-grep each file (bounded, no index yet).
     let mut out = Vec::new();

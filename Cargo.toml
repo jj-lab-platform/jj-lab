@@ -99,6 +99,7 @@ r2d2_sqlite = "0.35"
 # --- git / jj ---
 jj-lib = "=0.44.0"
 gix = { version = "=0.85.0", default-features = false }
+jiff = "0.2"
 
 # --- proto ---
 prost = "0.14"

@@ -13,12 +13,30 @@ pub async fn commit_log_handler(
 ) -> Response {
     let page: usize = q.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
     let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(20);
+    let rev = q.get("sha").cloned().or_else(|| q.get("rev").cloned());
+    let since = match q.get("since") {
+        Some(s) => match jjlab_git::read::parse_time_bound(s) {
+            Ok(ms) => Some(ms),
+            Err(e) => return json_err(StatusCode::BAD_REQUEST, e.to_string()),
+        },
+        None => None,
+    };
+    let until = match q.get("until") {
+        Some(s) => match jjlab_git::read::parse_time_bound(s) {
+            Ok(ms) => Some(ms),
+            Err(e) => return json_err(StatusCode::BAD_REQUEST, e.to_string()),
+        },
+        None => None,
+    };
     let store = state.store.clone();
     let (items, total) = match run_jj(move || {
         pollster::block_on(jjlab_git::read::commit_log(
             &store,
             &org,
             &repo,
+            rev.as_deref(),
+            since,
+            until,
             page.saturating_sub(1),
             limit,
         ))

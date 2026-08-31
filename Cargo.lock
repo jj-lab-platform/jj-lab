@@ -2417,6 +2417,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "gix",
+ "jiff",
  "jj-lib",
  "jjlab-core",
  "k8s-openapi",
