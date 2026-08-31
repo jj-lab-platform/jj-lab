@@ -6,6 +6,29 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 
+/// `POST /repos/{org}/{repo}/rebase` — rebase `source` (snapshot) onto `dest`
+/// (snapshot), advancing the dest bookmark. Conflicts are carried natively.
+pub async fn rebase_handler(
+    State(state): State<AppState>,
+    Path((org, repo)): Path<(String, String)>,
+    Json(body): Json<RebaseBody>,
+) -> Response {
+    let store = state.store.clone();
+    let db = state.db.clone();
+    let (source, dest) = (body.source.clone(), body.dest.clone());
+    let outcome = match run_jj(move || {
+        pollster::block_on(jjlab_git::mutation::rebase_branch(
+            &store, &db, &org, &repo, &source, &dest,
+        ))
+    })
+    .await
+    {
+        Ok(o) => o,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "rebase": outcome })).into_response()
+}
+
 pub async fn create_repo(
     State(state): State<AppState>,
     Path((org, repo)): Path<(String, String)>,
@@ -116,9 +139,10 @@ pub async fn set_branch_handler(
     let db = state.db.clone();
     let n2 = name.clone();
     let target = body.target.clone();
+    let change = body.change.clone();
     let sha = match run_jj(move || {
         pollster::block_on(jjlab_git::mutation::set_branch(
-            &store, &db, &org, &repo, &name, &target,
+            &store, &db, &org, &repo, &name, &target, &change,
         ))
     })
     .await
@@ -154,9 +178,10 @@ pub async fn set_tag_handler(
     let db = state.db.clone();
     let n2 = name.clone();
     let target = body.target.clone();
+    let change = body.change.clone();
     let sha = match run_jj(move || {
         pollster::block_on(jjlab_git::mutation::set_tag(
-            &store, &db, &org, &repo, &name, &target,
+            &store, &db, &org, &repo, &name, &target, &change,
         ))
     })
     .await

@@ -15,7 +15,6 @@
   import BranchesTab from '$lib/views/repo/BranchesTab.svelte'
   import GraphTab from '$lib/views/repo/GraphTab.svelte'
   import ChangesTab from '$lib/views/repo/ChangesTab.svelte'
-  import OpLogTab from '$lib/views/repo/OpLogTab.svelte'
   import PullsTab from '$lib/views/repo/PullsTab.svelte'
   import ReleasesTab from '$lib/views/repo/ReleasesTab.svelte'
   import ActionsTab from '$lib/views/repo/ActionsTab.svelte'
@@ -110,8 +109,6 @@
           <GraphTab />
         {:else if app.route.tab === 'changes'}
           <ChangesTab />
-        {:else if app.route.tab === 'op-log'}
-          <OpLogTab />
         {:else if app.route.tab === 'pulls'}
           <PullsTab />
         {:else if app.route.tab === 'releases'}

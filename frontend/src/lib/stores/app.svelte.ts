@@ -1,7 +1,7 @@
 import {
-  fetchOrgs, fetchBranches, fetchTags, fetchCommits, fetchCommit, fetchChange,
+  fetchOrgs, fetchBranches, fetchTags, fetchCommits, fetchCommit, fetchChanges,
   fetchTree, fetchFile, fetchRawFile, fetchDiff, fetchGraph, fetchFileLog,
-  fetchOpLog, fetchConflicts, fetchBookmarks, undoOp,
+  fetchConflicts,
   createRepo, deleteRepo, writeFile, createFile, deleteFile, createBranch,
   deleteBranch, createTag, deleteTag, cloneRemote, fetchMrs, fetchMr, createMr,
   updateMrState, fetchReviews, addReview, fetchComments, addComment, fetchMrDiff,
@@ -9,7 +9,7 @@ import {
   fetchRuns, fetchJobs, fetchJobLogs, decodeContent,
   type Org, type CommitInfo, type BranchInfo, type GraphNode, type Mr,
   type MrReview, type MrComment, type Release, type Workflow, type Run, type Job,
-  type OpLogEntry, type Conflict, type DbBookmark,
+  type Conflict, type ChangeSummary,
 } from '$lib/api'
 import { layoutGraph } from '$lib/graph-layout'
 import { TABS, type Tab, type Route } from '$lib/route'
@@ -389,55 +389,23 @@ class AppStore {
   }
 
   // ── changes tab ──
-  changesList: DbBookmark[] = $state([])
-  changeDetail: CommitInfo | null = $state(null)
+  changesList: ChangeSummary[] = $state([])
+  conflicts: Conflict[] = $state([])
 
   async loadChanges(): Promise<void> {
     const { org, repo } = this.route
     if (!org || !repo) return
+    this.changesList = []
+    this.conflicts = []
     try {
-      this.changesList = await fetchBookmarks(org, repo)
+      this.changesList = await fetchChanges(org, repo, this.branch || 'main')
     } catch {
       this.changesList = []
     }
-  }
-
-  async loadChangeDetail(changeId: string): Promise<void> {
-    const { org, repo } = this.route
-    if (!org || !repo) return
-    this.changeDetail = null
     try {
-      this.changeDetail = await fetchChange(org, repo, changeId)
-    } catch (e) {
-      this.error = e instanceof Error ? e.message : String(e)
-    }
-  }
-
-  // ── op-log tab ──
-  ops: OpLogEntry[] = $state([])
-  conflicts: Conflict[] = $state([])
-
-  async loadOps(): Promise<void> {
-    const { org, repo } = this.route
-    if (!org || !repo) return
-    try {
-      this.ops = await fetchOpLog(org, repo)
       this.conflicts = await fetchConflicts(org, repo)
-    } catch (e) {
-      this.error = e instanceof Error ? e.message : String(e)
-    }
-  }
-
-  async doUndo(opId: string): Promise<void> {
-    const { org, repo } = this.route
-    if (!org || !repo) return
-    if (!confirm(`Undo operation ${opId.slice(0, 10)}? This creates a compensating change.`)) return
-    try {
-      await undoOp(org, repo, opId)
-      await this.loadOps()
-      this.flash('Undo recorded')
-    } catch (e) {
-      this.error = e instanceof Error ? e.message : String(e)
+    } catch {
+      this.conflicts = []
     }
   }
 
@@ -688,7 +656,6 @@ $effect.root(() => {
     if (!org || !repo) return
     if (tab === 'graph') void app.loadGraph()
     else if (tab === 'changes') void app.loadChanges()
-    else if (tab === 'op-log') void app.loadOps()
     else if (tab === 'pulls') {
       if (sub && sub !== 'new') void app.loadMrDetail(Number(sub))
       else void app.loadMrs()

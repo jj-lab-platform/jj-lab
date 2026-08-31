@@ -36,15 +36,6 @@ pub struct ChangeRow {
 }
 
 #[derive(Debug, Clone)]
-pub struct OpLogRow {
-    pub id: String,
-    pub repo_id: String,
-    pub op_type: String,
-    pub payload: String,
-    pub undo_of: Option<String>,
-}
-
-#[derive(Debug, Clone)]
 pub struct AnchorRow {
     pub change_id: String,
     pub commit_id: Option<String>,
@@ -314,7 +305,6 @@ impl Db {
             ("bookmarks", "bookmarks"),
             ("conflicts", "conflicts"),
             ("change_id_map", "change_id_map"),
-            ("op_log", "op_log"),
             ("runs", "runs"),
             ("workflows", "workflows"),
             ("changes", "changes"),
@@ -633,43 +623,6 @@ impl Db {
         )
         .map_err(|e| Error::Db(format!("upsert conflict: {e}")))?;
         Ok(())
-    }
-
-    pub fn append_op_log(&self, r: &OpLogRow) -> Result<()> {
-        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
-        conn.execute(
-            "INSERT INTO op_log (id, repo_id, op_type, payload, undo_of)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![r.id, r.repo_id, r.op_type, r.payload, r.undo_of],
-        )
-        .map_err(|e| Error::Db(format!("append op log: {e}")))?;
-        Ok(())
-    }
-
-    pub fn list_op_log(&self, repo_id: &str) -> Result<Vec<OpLogRow>> {
-        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, repo_id, op_type, payload, undo_of
-                 FROM op_log WHERE repo_id = ?1 ORDER BY created_at ASC, rowid ASC",
-            )
-            .map_err(|e| Error::Db(format!("list op log prepare: {e}")))?;
-        let rows = stmt
-            .query_map([repo_id], |r| {
-                Ok(OpLogRow {
-                    id: r.get(0)?,
-                    repo_id: r.get(1)?,
-                    op_type: r.get(2)?,
-                    payload: r.get(3)?,
-                    undo_of: r.get(4)?,
-                })
-            })
-            .map_err(|e| Error::Db(format!("list op log query: {e}")))?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| Error::Db(format!("list op log row: {e}")))?);
-        }
-        Ok(out)
     }
 
     // ── merge requests (M3) ──
@@ -1541,14 +1494,6 @@ CREATE TABLE IF NOT EXISTS release_assets (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
     UNIQUE (release_id, name)
 );
-CREATE TABLE IF NOT EXISTS op_log (
-    id TEXT PRIMARY KEY,
-    repo_id TEXT NOT NULL REFERENCES repos(id) ON UPDATE CASCADE,
-    op_type TEXT NOT NULL,
-    payload TEXT NOT NULL DEFAULT '{}',
-    undo_of TEXT,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
-);
 "#;
 #[cfg(test)]
 mod tests {
@@ -1727,26 +1672,5 @@ mod tests {
         conn.execute("DELETE FROM runs WHERE id = ?1", [run]).unwrap();
         drop(conn);
         assert!(db.list_jobs(run).unwrap().is_empty());
-    }
-
-    // ── op-log ordering ──
-
-    #[test]
-    fn op_log_preserves_insertion_order() {
-        let (_d, db) = db();
-        let id = seed_repo(&db, "o", "r");
-        for i in 0..5 {
-            db.append_op_log(&OpLogRow {
-                id: format!("op-{i}"),
-                repo_id: id.clone(),
-                op_type: "test".into(),
-                payload: "{}".into(),
-                undo_of: None,
-            })
-            .unwrap();
-        }
-        let ops = db.list_op_log(&id).unwrap();
-        let ids: Vec<&str> = ops.iter().map(|o| o.id.as_str()).collect();
-        assert_eq!(ids, vec!["op-0", "op-1", "op-2", "op-3", "op-4"]);
     }
 }

@@ -84,7 +84,8 @@ async fn health_is_public() {
 #[tokio::test]
 async fn errors_use_gitea_shape() {
     let app = TestApp::new();
-    let mut resp = app.send("GET", "/api/v1/repos/o/r/changes/zzzz", None, None).await;
+    // A snapshot rev that resolves nothing still produces a Gitea-shaped error.
+    let mut resp = app.send("GET", "/api/v1/repos/o/r/git/commits/ffffffffffffffffffffffffffffffffffffffff", None, None).await;
     let status = TestApp::status(&mut resp).await;
     assert_eq!(status, 404);
     let body = TestApp::body_json(&mut resp).await;
@@ -191,12 +192,14 @@ async fn repo_create_duplicate_conflict_then_write_read_delete_file() {
     let body2 = TestApp::body_json(&mut resp).await;
     assert_ne!(body2["sha"], sha);
 
-    // The change is queryable via change-id (prefix works).
-    let cid = change_id[..8].to_string();
+    // Changes are listed rev-anchored (like commits/files).
     let mut resp = app
-        .send("GET", &format!("/api/v1/repos/o/r/changes/{cid}"), None, None)
+        .send("GET", "/api/v1/repos/o/r/changes?rev=main", None, None)
         .await;
     assert_eq!(TestApp::status(&mut resp).await, 200);
+    let bodyc = TestApp::body_json(&mut resp).await;
+    let changes = bodyc["changes"].as_array().unwrap();
+    assert!(changes.iter().any(|c| c["change_id"].as_str().unwrap() == change_id));
 
     // Delete file.
     let mut resp = app
@@ -461,10 +464,10 @@ async fn actions_workflow_dispatch_runs_and_logs() {
     );
 }
 
-// ── op-log / undo ──
+// ── annotate / rebase ──
 
 #[tokio::test]
-async fn op_log_stream_catchup_and_undo() {
+async fn annotate_reports_origin_change_and_rebase_advances_dest() {
     let app = TestApp::new();
     let _ = app
         .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_branch", "main".into())]))
@@ -477,54 +480,27 @@ async fn op_log_stream_catchup_and_undo() {
             obj(&[("content", "x\n".into()), ("branch", "main".into())]),
         )
         .await;
-    // Catch-up stream returns ops in order (stream body starts with SSE frames).
+
+    // annotate: the single line originates from the write change.
     let mut resp = app
-        .send("GET", "/api/v1/repos/o/r/op-log/stream", None, None)
+        .send("GET", "/api/v1/repos/o/r/annotate/u.txt?rev=main", None, None)
         .await;
     assert_eq!(TestApp::status(&mut resp).await, 200);
-    // SSE content-type and no full-body read: the live tail never ends.
-    assert!(
-        resp.headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .starts_with("text/event-stream"),
-        "stream must be SSE"
-    );
+    let body = TestApp::body_json(&mut resp).await;
+    let ann = body["annotations"].as_array().unwrap();
+    assert_eq!(ann.len(), 1);
+    assert!(ann[0]["change_id"].as_str().unwrap().len() == 32);
 
-    // Undo the latest op → content disappears.
-    let ops = app
-        .router
-        .clone()
-        .oneshot(
-            axum::http::Request::builder()
-                .method("GET")
-                .uri("/api/v1/repos/o/r/op-log")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let bytes = ops.into_body().collect().await.unwrap().to_bytes();
-    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    let last_id = body["ops"].as_array().unwrap().last().unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    // rebase main onto itself is a no-op-ish but must succeed (snapshot-only).
     let mut resp = app
-        .send(
+        .json(
             "POST",
-            &format!(
-                "/api/v1/repos/o/r/op-log/{}/undo",
-                last_id.replace('/', "%2F")
-            ),
+            "/api/v1/repos/o/r/rebase",
             Some("wtoken"),
-            None,
+            obj(&[("source", "main".into()), ("dest", "main".into())]),
         )
         .await;
-    assert_eq!(TestApp::status(&mut resp).await, 200, "undo ok");
-    let mut resp = app.send("GET", "/api/v1/repos/o/r/raw/u.txt", None, None).await;
-    assert_eq!(TestApp::status(&mut resp).await, 404, "undone content gone");
+    assert_eq!(TestApp::status(&mut resp).await, 200, "rebase ok");
 }
 
 // ── read-surface matrix (covers remaining handlers) ──

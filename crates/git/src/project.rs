@@ -8,7 +8,7 @@ use jj_lib::backend::TreeValue;
 use jj_lib::object_id::ObjectId as _;
 use jj_lib::repo::Repo as _;
 
-use jjlab_core::db::{ChangeRow, OpLogRow};
+use jjlab_core::db::ChangeRow;
 use jjlab_core::Db;
 
 use crate::repo::{RepoError, RepoStore};
@@ -250,16 +250,5 @@ pub async fn project_repo(
         }
     });
 
-    db.append_op_log(&OpLogRow {
-        id: format!("project-{}-{}", repo_id.replace("/", "_"), std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)),
-        repo_id,
-        op_type: "project".to_string(),
-        payload: "{}".to_string(),
-        undo_of: None,
-    })
-    .map_err(|e| RepoError::Other(e.to_string()))?;
     Ok(())
 }

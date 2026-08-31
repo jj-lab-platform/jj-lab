@@ -41,8 +41,154 @@ pub struct TreeEntryInfo {
     pub size: u64,
 }
 
+/// One entry of a change list: a change-id resolved against a snapshot rev,
+/// plus its current commit there (unambiguous because an amend chain is a
+/// single visible commit in that rev's history).
+#[derive(serde::Serialize)]
+pub struct ChangeSummary {
+    pub change_id: String,
+    pub commit_id: String,
+    pub description: String,
+    pub author: String,
+}
+
+/// A single annotated line (mirrors jj `file annotate`'s `AnnotationLine`).
+#[derive(serde::Serialize)]
+pub struct AnnotationLine {
+    pub line_number: usize,
+    pub original_line_number: usize,
+    pub content: String,
+    pub first_line_in_hunk: bool,
+    pub commit_id: String,
+    pub change_id: String,
+    pub message: String,
+    pub author: String,
+}
+
 pub async fn open(store: &Arc<RepoStore>, org: &str, repo: &str) -> Result<Arc<ReadonlyRepo>, RepoError> {
     Ok(store.open(org, repo).await?.repo.clone())
+}
+
+/// Line-by-line annotation of a file at a snapshot rev. The rev is a strict
+/// snapshot (sha/bookmark/tag); each line reports the origin commit (jj-native
+/// `annotate`, may be a hidden/amended predecessor) plus that commit's
+/// change-id so a caller can keep operating on the change.
+pub async fn annotate_file(
+    store: &Arc<RepoStore>,
+    org: &str,
+    repo: &str,
+    rev: &str,
+    path: &str,
+) -> Result<Vec<AnnotationLine>, RepoError> {
+    let repo = open(store, org, repo).await?;
+    let start = resolve_snapshot(&repo, rev)?;
+    let commit = repo
+        .store()
+        .get_commit(&start)
+        .map_err(|e| RepoError::Other(e.to_string()))?;
+    let repo_path = RepoPathBuf::from_internal_string(path)
+        .map_err(|e| RepoError::Other(format!("bad path {path:?}: {e}")))?;
+
+    let mut annotator = jj_lib::annotate::FileAnnotator::from_commit(&commit, &repo_path)
+        .await
+        .map_err(|e| RepoError::Other(e.to_string()))?;
+    // Annotate within all ancestors of the visible heads (the widest domain a
+    // CLI caller would get without extra filters).
+    let domain = jj_lib::revset::RevsetExpression::visible_heads().ancestors();
+    annotator
+        .compute(repo.as_ref(), &domain)
+        .await
+        .map_err(|e| RepoError::Other(e.to_string()))?;
+    let annotation = annotator.to_annotation();
+
+    let mut out = Vec::new();
+    for (i, (origin, text)) in annotation.line_origins().enumerate() {
+        let origin_commit_id = match origin {
+            Ok(o) => o.commit_id.clone(),
+            Err(o) => o.commit_id.clone(),
+        };
+        let origin_line_number = match origin {
+            Ok(o) => o.line_number,
+            Err(o) => o.line_number,
+        };
+        let origin_commit = repo.store().get_commit(&origin_commit_id).ok();
+        let (commit_id, change_id, message, author) = match origin_commit {
+            Some(c) => {
+                let a = c.author();
+                (
+                    c.id().hex(),
+                    c.change_id().reverse_hex(),
+                    c.description().to_string(),
+                    format!("{} <{}>", a.name, a.email),
+                )
+            }
+            None => (origin_commit_id.hex(), String::new(), String::new(), String::new()),
+        };
+        let first_in_hunk = i == 0 || {
+            // Recomputing hunk boundaries is cheap here because line_origins
+            // yields consecutive lines in order; the previous commit id is the
+            // only signal jj exposes (`.first_line_in_hunk()` on the template
+            // level uses the same adjacency rule).
+            let prev = out.last();
+            prev.map(|p: &AnnotationLine| p.commit_id != commit_id).unwrap_or(true)
+        };
+        out.push(AnnotationLine {
+            line_number: i + 1,
+            original_line_number: origin_line_number + 1,
+            content: String::from_utf8_lossy(text).to_string(),
+            first_line_in_hunk: first_in_hunk || commit_id.is_empty(),
+            commit_id,
+            change_id,
+            message,
+            author,
+        });
+    }
+    Ok(out)
+}
+
+/// List all changes reachable from a snapshot rev (a rev is a snapshot:
+/// sha/bookmark/tag). Mirrors `commits`/`files` semantics: the change view is
+/// anchored to a rev, so each change-id resolves to a single visible commit in
+/// that rev's history and there is no cross-branch divergence ambiguity.
+pub async fn list_changes(
+    store: &Arc<RepoStore>,
+    org: &str,
+    repo: &str,
+    rev: &str,
+) -> Result<Vec<ChangeSummary>, RepoError> {
+    let repo = open(store, org, repo).await?;
+    let root_id = repo.store().root_commit_id().clone();
+    // Walk ancestors of the rev's commit; dedupe by change-id (an amend chain
+    // has one change-id with only the newest commit visible, so the chain
+    // collapses to its current commit naturally).
+    let start = resolve_snapshot(&repo, rev)?;
+    let mut stack = vec![start];
+    let mut seen_commits = std::collections::HashSet::new();
+    let mut seen_changes = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    while let Some(id) = stack.pop() {
+        if !seen_commits.insert(id.clone()) {
+            continue;
+        }
+        if id == root_id {
+            continue;
+        }
+        let Ok(commit) = repo.store().get_commit(&id) else { continue };
+        let change_id = commit.change_id().reverse_hex();
+        if seen_changes.insert(change_id.clone()) {
+            let author = commit.author();
+            out.push(ChangeSummary {
+                change_id,
+                commit_id: commit.id().hex(),
+                description: commit.description().to_string(),
+                author: format!("{} <{}>", author.name, author.email),
+            });
+        }
+        for p in commit.parent_ids() {
+            stack.push(p.clone());
+        }
+    }
+    Ok(out)
 }
 
 /// Git-aligned: commit info by commit sha (prefix accepted).
@@ -53,23 +199,7 @@ pub async fn commit_by_sha(
     sha: &str,
 ) -> Result<CommitInfo, RepoError> {
     let repo = open(store, org, repo).await?;
-    let id = resolve_commit(&repo, sha)?;
-    let commit = repo
-        .store()
-        .get_commit(&id)
-        .map_err(|e| RepoError::Other(e.to_string()))?;
-    Ok(commit_info(&commit))
-}
-
-/// jj-native: commit info addressed by change-id (hex prefix).
-pub async fn change_info(
-    store: &Arc<RepoStore>,
-    org: &str,
-    repo: &str,
-    change_id: &str,
-) -> Result<CommitInfo, RepoError> {
-    let repo = open(store, org, repo).await?;
-    let id = resolve_change(&repo, change_id)?;
+    let id = resolve_snapshot(&repo, sha)?;
     let commit = repo
         .store()
         .get_commit(&id)
@@ -106,7 +236,7 @@ pub async fn tree_at_sha(
     sha: &str,
 ) -> Result<Vec<TreeEntryInfo>, RepoError> {
     let repo = open(store, org, repo).await?;
-    let id = resolve_commit(&repo, sha)?;
+    let id = resolve_snapshot(&repo, sha)?;
     let commit = repo
         .store()
         .get_commit(&id)
@@ -116,7 +246,11 @@ pub async fn tree_at_sha(
 }
 
 /// Resolve a rev: bookmark name, commit-id hex prefix, or change-id hex prefix.
-pub fn resolve_commit(repo: &ReadonlyRepo, rev: &str) -> Result<CommitId, RepoError> {
+/// Resolve a **snapshot** rev to its commit id. Accepts, in order: tag name,
+/// bookmark name, then a commit-id sha prefix. A change-id is deliberately NOT
+/// accepted here — a snapshot must map to exactly one commit tree, and a
+/// change-id is not uniquely that (amend chains / divergence).
+pub fn resolve_snapshot(repo: &ReadonlyRepo, rev: &str) -> Result<CommitId, RepoError> {
     if rev.is_empty() {
         // Prefer the default bookmark: heads() contains the root commit and
         // the working-copy commit, neither of which is a meaningful default.
@@ -136,9 +270,16 @@ pub fn resolve_commit(repo: &ReadonlyRepo, rev: &str) -> Result<CommitId, RepoEr
     }
 
     let name: jj_lib::ref_name::RefNameBuf = rev.to_string().into();
-    let target = repo.view().get_local_bookmark(&name);
-    if !target.is_absent() {
-        if let Some(id) = target.as_normal() {
+    // Tags are bookmarks too (jj ref model) — resolution order is tag first.
+    let tag = repo.view().get_local_tag(&name);
+    if !tag.is_absent() {
+        if let Some(id) = tag.as_normal() {
+            return Ok(id.clone());
+        }
+    }
+    let bookmark = repo.view().get_local_bookmark(&name);
+    if !bookmark.is_absent() {
+        if let Some(id) = bookmark.as_normal() {
             return Ok(id.clone());
         }
     }
@@ -147,55 +288,75 @@ pub fn resolve_commit(repo: &ReadonlyRepo, rev: &str) -> Result<CommitId, RepoEr
         let index = repo.readonly_index().as_index();
         match index.resolve_commit_id_prefix(&prefix) {
             Ok(PrefixResolution::SingleMatch(id)) => return Ok(id),
-            Ok(_) => {}
-            Err(e) => return Err(RepoError::Other(format!("resolve commit prefix: {e}"))),
-        }
-        let mut heads = repo.view().heads().iter();
-        let change_index = repo.readonly_index().change_id_index(&mut heads);
-        match change_index.resolve_prefix(&prefix) {
-            Ok(PrefixResolution::SingleMatch(targets)) => {
-                if let Some(ids) = targets.into_visible() {
-                    if let Some(id) = ids.into_iter().next() {
-                        return Ok(id);
-                    }
-                }
+            Ok(PrefixResolution::AmbiguousMatch) => {
+                return Err(RepoError::Invalid(format!("commit id {rev:?} is ambiguous")))
             }
-            Ok(_) => {}
-            Err(e) => return Err(RepoError::Other(format!("resolve change prefix: {e}"))),
+            Ok(PrefixResolution::NoMatch) => {}
+            Err(e) => return Err(RepoError::Other(format!("resolve commit prefix: {e}"))),
         }
     }
 
     Err(RepoError::NotFound { org: String::new(), repo: String::new() })
 }
 
-/// Resolve a change-id (reverse-hex prefix) strictly to its current commit id.
-pub fn resolve_change(repo: &ReadonlyRepo, change_id: &str) -> Result<CommitId, RepoError> {
-    let prefix = match HexPrefix::try_from_reverse_hex(change_id) {
+/// Resolve a **revset symbol** to a single commit (used by `compare`'s
+/// `base`/`head`, which mirror jj `diff --from/--to`). Accepts tag, bookmark,
+/// commit-id prefix, and change-id; a divergent change-id (multiple visible
+/// commits) is an error, never a silent pick.
+pub fn resolve_revset_single(repo: &ReadonlyRepo, rev: &str) -> Result<CommitId, RepoError> {
+    // Fast path: the strict snapshot resolution first (tag/bookmark/sha).
+    match resolve_snapshot(repo, rev) {
+        Ok(id) => return Ok(id),
+        Err(RepoError::NotFound { .. }) => {}
+        Err(e) => return Err(e),
+    }
+    // Fall back to change-id resolution (reverse-hex), erroring on divergence.
+    let prefix = match HexPrefix::try_from_reverse_hex(rev) {
         Some(p) => p,
-        None => return Err(RepoError::Invalid(format!("invalid change id {change_id:?}"))),
+        None => return Err(RepoError::NotFound { org: String::new(), repo: String::new() }),
     };
     let mut heads = repo.view().heads().iter();
     let change_index = repo.readonly_index().change_id_index(&mut heads);
     match change_index.resolve_prefix(&prefix) {
         Ok(PrefixResolution::SingleMatch(targets)) => {
-            if let Some(ids) = targets.into_visible() {
-                if let Some(id) = ids.into_iter().next() {
-                    return Ok(id);
-                }
+            if targets.is_divergent() {
+                return Err(RepoError::Invalid(format!("change id {rev:?} is divergent")));
             }
-            Err(RepoError::NotFound {
-                org: String::new(),
-                repo: String::new(),
-            })
+            let visible = targets.into_visible().unwrap_or_default();
+            match visible.len() {
+                1 => Ok(visible[0].clone()),
+                0 => Err(RepoError::NotFound { org: String::new(), repo: String::new() }),
+                _ => Err(RepoError::Invalid(format!("change id {rev:?} is divergent"))),
+            }
         }
         Ok(PrefixResolution::AmbiguousMatch) => {
-            Err(RepoError::Other(format!("change id {change_id:?} is ambiguous")))
+            Err(RepoError::Invalid(format!("change id {rev:?} is ambiguous")))
         }
         Ok(PrefixResolution::NoMatch) => Err(RepoError::NotFound {
             org: String::new(),
             repo: String::new(),
         }),
         Err(e) => Err(RepoError::Other(format!("resolve change prefix: {e}"))),
+    }
+}
+
+/// Resolve either a snapshot `target` (sha/bookmark/tag) or a revset `change`
+/// id (revset semantics: divergent is an error). Exactly one must be non-empty;
+/// used by the branch/tag write surface.
+pub fn resolve_target_or_change(
+    repo: &ReadonlyRepo,
+    target: &str,
+    change: &str,
+) -> Result<CommitId, RepoError> {
+    match (target.is_empty(), change.is_empty()) {
+        (false, false) => Err(RepoError::Invalid(
+            "provide either 'target' (snapshot) or 'change' (revset), not both".into(),
+        )),
+        (false, true) => resolve_snapshot(repo, target),
+        (true, false) => resolve_revset_single(repo, change),
+        (true, true) => Err(RepoError::Invalid(
+            "provide either 'target' (snapshot) or 'change' (revset)".into(),
+        )),
     }
 }
 
@@ -426,7 +587,7 @@ pub async fn commit_patch(
     sha: &str,
 ) -> Result<String, RepoError> {
     let repo = open(store, org, repo).await?;
-    let id = resolve_commit(&repo, sha)?;
+    let id = resolve_snapshot(&repo, sha)?;
     let commit = repo
         .store()
         .get_commit(&id)
@@ -447,7 +608,36 @@ pub async fn commit_patch(
     tree_patch(&repo, &parent_tree, &commit.tree()).await
 }
 
-/// Unified patch between two revs (`base` → `head`).
+/// Unified patch of one commit vs its **merged** parent trees — the exact
+/// `jj show` / `jj diff -r <commit>` semantics (merge parents into one tree
+/// first, then diff). This is the authoritative "what did this change do".
+pub async fn commit_patch_merged(
+    store: &Arc<RepoStore>,
+    org: &str,
+    repo: &str,
+    sha: &str,
+) -> Result<String, RepoError> {
+    let repo = open(store, org, repo).await?;
+    let id = resolve_snapshot(&repo, sha)?;
+    let commit = repo
+        .store()
+        .get_commit(&id)
+        .map_err(|e| RepoError::Other(e.to_string()))?;
+    let base = commit
+        .parent_tree(repo.as_ref())
+        .await
+        .unwrap_or_else(|_| {
+            jj_lib::merged_tree::MergedTree::resolved(
+                repo.store().clone(),
+                repo.store().empty_tree_id().clone(),
+            )
+        });
+    tree_patch(&repo, &base, &commit.tree()).await
+}
+
+/// Unified patch between two revs (`base` → `head`). Each side is a revset
+/// symbol (tag/bookmark/sha/change-id), mirroring `jj diff --from/--to`; a
+/// divergent change-id is an error.
 pub async fn compare_patch(
     store: &Arc<RepoStore>,
     org: &str,
@@ -456,8 +646,8 @@ pub async fn compare_patch(
     head: &str,
 ) -> Result<String, RepoError> {
     let repo = open(store, org, repo).await?;
-    let a = resolve_commit(&repo, base)?;
-    let b = resolve_commit(&repo, head)?;
+    let a = resolve_revset_single(&repo, base)?;
+    let b = resolve_revset_single(&repo, head)?;
     let ca = repo
         .store()
         .get_commit(&a)
@@ -621,7 +811,7 @@ pub async fn contents_entry(
     path: &str,
 ) -> Result<serde_json::Value, RepoError> {
     let repo = open(store, org, repo).await?;
-    let id = resolve_commit(&repo, sha)?;
+    let id = resolve_snapshot(&repo, sha)?;
     let commit = repo
         .store()
         .get_commit(&id)
@@ -651,7 +841,7 @@ pub async fn contents_dir(
     sha: &str,
 ) -> Result<Vec<serde_json::Value>, RepoError> {
     let repo = open(store, org, repo).await?;
-    let id = resolve_commit(&repo, sha)?;
+    let id = resolve_snapshot(&repo, sha)?;
     let commit = repo
         .store()
         .get_commit(&id)
@@ -677,7 +867,7 @@ pub async fn archive_tarball(
     sha: &str,
 ) -> Result<Vec<u8>, RepoError> {
     let repo = open(store, org, repo).await?;
-    let id = resolve_commit(&repo, sha)?;
+    let id = resolve_snapshot(&repo, sha)?;
     let commit = repo
         .store()
         .get_commit(&id)
@@ -724,7 +914,7 @@ pub async fn resolve_rev(
     rev: &str,
 ) -> Result<(String, String), RepoError> {
     let repo = open(store, org, repo).await?;
-    let id = resolve_commit(&repo, rev)?;
+    let id = resolve_snapshot(&repo, rev)?;
     let commit = repo
         .store()
         .get_commit(&id)
@@ -888,7 +1078,7 @@ pub async fn search_code(
     pattern: &str,
 ) -> Result<Vec<String>, RepoError> {
     let repo = open(store, org, repo).await?;
-    let id = resolve_commit(&repo, rev)?;
+    let id = resolve_snapshot(&repo, rev)?;
     let commit = repo.store().get_commit(&id).map_err(|e| RepoError::Other(e.to_string()))?;
     // Walk the tree and line-grep each file (bounded, no index yet).
     let mut out = Vec::new();
@@ -958,7 +1148,7 @@ pub async fn read_file_at(
     path: &str,
 ) -> Result<Vec<u8>, RepoError> {
     let repo = open(store, org, repo).await?;
-    let id = resolve_commit(&repo, sha)?;
+    let id = resolve_snapshot(&repo, sha)?;
     let commit = repo
         .store()
         .get_commit(&id)
@@ -977,7 +1167,7 @@ pub async fn checkout_tree(
     dest: &std::path::Path,
 ) -> Result<(), RepoError> {
     let repo = open(store, org, repo).await?;
-    let id = resolve_commit(&repo, sha)?;
+    let id = resolve_snapshot(&repo, sha)?;
     let commit = repo
         .store()
         .get_commit(&id)
@@ -1020,7 +1210,7 @@ pub async fn contents_dir_at(
     dir: &str,
 ) -> Result<Vec<serde_json::Value>, RepoError> {
     let repo = open(store, org, repo).await?;
-    let id = resolve_commit(&repo, sha)?;
+    let id = resolve_snapshot(&repo, sha)?;
     let commit = repo
         .store()
         .get_commit(&id)
@@ -1063,22 +1253,6 @@ pub async fn branch_tips(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn resolve_change_rejects_forward_hex() {
-        // Regression: change-ids are reverse-hex (z-k digits); plain hex must
-        // not silently resolve.
-        let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(RepoStore::new(dir.path().to_path_buf()));
-        let repo = pollster::block_on(open(&store, "o", "r"));
-        assert!(repo.is_err() || {
-            let repo = repo.unwrap();
-            // A repo with no commits cannot resolve anything; the key assertion
-            // is that pure-hex input fails to parse as reverse hex.
-            let err = resolve_change(&repo, "abcdef0123456789abcdef0123456789");
-            err.is_err()
-        });
-    }
 
     #[test]
     fn resolve_commit_empty_rev_on_missing_repo_errors() {

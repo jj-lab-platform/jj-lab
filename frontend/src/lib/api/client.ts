@@ -2,6 +2,7 @@
 
 import type {
   BranchInfo,
+  ChangeSummary,
   CommitInfo,
   Conflict,
   DbBookmark,
@@ -10,7 +11,6 @@ import type {
   Mr,
   MrComment,
   MrReview,
-  OpLogEntry,
   Org,
   Release,
   Run,
@@ -107,8 +107,15 @@ export async function fetchCommit(org: string, repo: string, sha: string): Promi
   return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/git/commits/${enc(sha)}`)
 }
 
-export async function fetchChange(org: string, repo: string, changeId: string): Promise<CommitInfo> {
-  return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/changes/${enc(changeId)}`)
+export async function fetchCommitDiff(org: string, repo: string, sha: string): Promise<{ diff: string }> {
+  return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/git/commits/${enc(sha)}/diff`)
+}
+
+export async function fetchChanges(org: string, repo: string, rev: string): Promise<ChangeSummary[]> {
+  const data = await request<{ changes: ChangeSummary[] }>(
+    `/api/v1/repos/${enc(org)}/${enc(repo)}/changes?rev=${enc(rev)}`,
+  )
+  return data.changes ?? []
 }
 
 export async function fetchTree(org: string, repo: string, rev: string): Promise<TreeEntry[]> {
@@ -190,13 +197,6 @@ export async function searchCode(
 
 // ── jj-native metadata ──
 
-export async function fetchOpLog(org: string, repo: string): Promise<OpLogEntry[]> {
-  const data = await request<{ ops: OpLogEntry[] }>(
-    `/api/v1/repos/${enc(org)}/${enc(repo)}/op-log`,
-  )
-  return data.ops ?? []
-}
-
 export async function fetchConflicts(org: string, repo: string): Promise<Conflict[]> {
   const data = await request<{ conflicts: Conflict[] }>(
     `/api/v1/repos/${enc(org)}/${enc(repo)}/conflicts`,
@@ -209,16 +209,6 @@ export async function fetchBookmarks(org: string, repo: string): Promise<DbBookm
     `/api/v1/repos/${enc(org)}/${enc(repo)}/bookmarks`,
   )
   return data.bookmarks ?? []
-}
-
-export async function undoOp(
-  org: string,
-  repo: string,
-  opId: string,
-): Promise<{ ok: boolean; undo_op_id: string; undo_of: string | null }> {
-  return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/op-log/${enc(opId)}/undo`, {
-    method: 'POST',
-  })
 }
 
 // ── writes ──

@@ -6,37 +6,103 @@
 use std::sync::Arc;
 
 use jj_lib::backend::{CopyId, TreeValue};
+use jj_lib::merge::Merge;
+use jj_lib::merged_tree_builder::MergedTreeBuilder;
 use jj_lib::object_id::ObjectId as _;
 use jj_lib::repo::Repo as _;
 use jj_lib::repo_path::RepoPathBuf;
 use jj_lib::tree_builder::TreeBuilder;
 
-use jjlab_core::db::OpLogRow;
 use jjlab_core::Db;
 
 use crate::project;
-use crate::read::resolve_commit;
 use crate::repo::{RepoError, RepoStore};
 
-/// Append a DB op_log row mirroring a just-written jj operation, so the
-/// frontend op-log is 1:1 with the jj operation log (undo addresses either).
-fn record_op(
+/// Outcome of a rebase: the dest tip commit, its change-id, and any paths that
+/// still conflict after the native (conflict-tolerant) rebase.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RebaseOutcome {
+    pub commit_id: String,
+    pub change_id: String,
+    pub conflicts: Vec<String>,
+}
+
+/// Rebase the source snapshot's commits onto the dest snapshot, advancing the
+/// dest bookmark. jj-native: the rebase never "stops" on conflicts — conflicts
+/// are carried as first-class tree conflicts in the resulting commit and
+/// reported as paths.
+pub async fn rebase_branch(
+    store: &Arc<RepoStore>,
     db: &Db,
-    repo_id: &str,
-    op_type: &str,
-    jj_op_id: &str,
-    payload: serde_json::Value,
-) {
-    let row = OpLogRow {
-        id: jj_op_id.to_string(),
-        repo_id: repo_id.to_string(),
-        op_type: op_type.to_string(),
-        payload: payload.to_string(),
-        undo_of: None,
-    };
-    if let Err(e) = db.append_op_log(&row) {
-        tracing::warn!(repo_id, err = %e, "append op_log failed");
+    org: &str,
+    repo: &str,
+    source: &str,
+    dest: &str,
+) -> Result<RebaseOutcome, RepoError> {
+    let handle = store.open(org, repo).await?;
+    let source_id = pollster::block_on(async {
+        let arc = handle.repo.clone();
+        crate::read::resolve_snapshot(&arc, source)
+    })?;
+    let dest_id = pollster::block_on(async {
+        let arc = handle.repo.clone();
+        crate::read::resolve_snapshot(&arc, dest)
+    })?;
+
+    let tip = pollster::block_on(async {
+        let mut tx = handle.repo.start_transaction();
+        let tip = {
+            let source_commit = tx
+                .repo()
+                .store()
+                .get_commit(&source_id)
+                .map_err(|e| RepoError::Other(e.to_string()))?;
+            let mut_repo = tx.repo_mut();
+            let rebased = jj_lib::rewrite::rebase_commit(
+                mut_repo,
+                source_commit,
+                vec![dest_id.clone()],
+            )
+            .await
+            .map_err(|e| RepoError::Other(format!("rebase commit: {e}")))?;
+            // Rebase everything that sat on top of the old source (bookmarks,
+            // the working-copy commit, descendants) onto the rebased commit.
+            mut_repo
+                .rebase_descendants()
+                .await
+                .map_err(|e| RepoError::Other(format!("rebase descendants: {e}")))?;
+            // Move the dest bookmark onto the rebased commit.
+            let target: jj_lib::ref_name::RefNameBuf = dest.to_string().into();
+            mut_repo.set_local_bookmark_target(
+                &target,
+                jj_lib::op_store::RefTarget::normal(rebased.id().clone()),
+            );
+            rebased.id().clone()
+        };
+        tx.commit(&format!("jjlab: rebase {source} onto {dest}"))
+            .await
+            .map_err(|e| RepoError::Other(e.to_string()))?;
+        Ok::<_, RepoError>(tip)
+    })?;
+
+    project::project_repo(store, db, org, repo).await?;
+
+    let handle = store.open(org, repo).await?;
+    let commit = handle
+        .repo
+        .store()
+        .get_commit(&tip)
+        .map_err(|e| RepoError::Other(e.to_string()))?;
+    let mut conflicts = Vec::new();
+    for (path, _) in commit.tree().conflicts() {
+        conflicts.push(path.as_internal_file_string().to_string());
     }
+    conflicts.sort();
+    Ok(RebaseOutcome {
+        commit_id: commit.id().hex(),
+        change_id: commit.change_id().reverse_hex(),
+        conflicts,
+    })
 }
 
 /// Create an empty repo with a README (rucoder-neo semantics).
@@ -131,20 +197,23 @@ pub async fn delete_repo(store: &Arc<RepoStore>, org: &str, repo: &str) -> Resul
     Ok(())
 }
 
-/// Move a bookmark (git branch) to a rev. Creates it when absent.
+/// Move a bookmark (git branch) to a snapshot or change-id view. `target`
+/// (snapshot: sha/bookmark/tag) and `change` (change-id) are mutually
+/// exclusive; exactly one must be non-empty.
 pub async fn set_branch(
     store: &Arc<RepoStore>,
     db: &Db,
     org: &str,
     repo: &str,
     name: &str,
-    rev: &str,
+    target: &str,
+    change: &str,
 ) -> Result<String, RepoError> {
     jjlab_core::validate_ref_name(name, "branch").map_err(RepoError::Invalid)?;
     let handle = store.open(org, repo).await?;
     let commit_id = pollster::block_on(async {
         let repo_arc = handle.repo.clone();
-        resolve_commit(&repo_arc, rev)
+        crate::read::resolve_target_or_change(&repo_arc, target, change)
     })?;
 
     pollster::block_on(async {
@@ -192,20 +261,22 @@ pub async fn delete_branch(
     project::project_repo(store, db, org, repo).await
 }
 
-/// Create/move a tag to a rev.
+/// Create/move a tag to a snapshot or change-id view. `target` (snapshot:
+/// sha/bookmark/tag) and `change` (change-id) are mutually exclusive.
 pub async fn set_tag(
     store: &Arc<RepoStore>,
     db: &Db,
     org: &str,
     repo: &str,
     name: &str,
-    rev: &str,
+    target: &str,
+    change: &str,
 ) -> Result<String, RepoError> {
     jjlab_core::validate_ref_name(name, "tag").map_err(RepoError::Invalid)?;
     let handle = store.open(org, repo).await?;
     let commit_id = pollster::block_on(async {
         let repo_arc = handle.repo.clone();
-        resolve_commit(&repo_arc, rev)
+        crate::read::resolve_target_or_change(&repo_arc, target, change)
     })?;
     pollster::block_on(async {
         let mut tx = handle.repo.start_transaction();
@@ -251,12 +322,10 @@ pub async fn delete_tag(
     project::project_repo(store, db, org, repo).await
 }
 
-/// Outcome of a content edit: the new commit (git sha), its change-id, and the
-/// jj operation id that recorded this edit (for precise op-log addressing).
+/// Outcome of a content edit: the new commit (git sha) and its change-id.
 pub struct EditOutcome {
     pub sha: String,
     pub change_id: String,
-    pub op_id: String,
 }
 
 /// Write (create/update) a file at `path` on top of `branch`'s head.
@@ -291,15 +360,19 @@ pub async fn write_file(
         timestamp: jj_lib::backend::Timestamp::now(),
     };
     let repo_arc = handle.repo.clone();
-    let base = pollster::block_on(async { resolve_commit(&repo_arc, branch) })?;
+    let base = pollster::block_on(async { crate::read::resolve_snapshot(&repo_arc, branch) })?;
 
-    let (outcome, op_id) = pollster::block_on(async {
+    let outcome = pollster::block_on(async {
         let mut tx = handle.repo.start_transaction();
         let outcome = {
             let mut_repo = tx.repo_mut();
             let store_ = mut_repo.store().clone();
 
-            // Start from the head's root tree and set the single path.
+            // Start from the head's merged tree and set the single path. Using
+            // MergedTreeBuilder (not a resolved TreeBuilder) means any other
+            // first-class conflicts in the head tree survive: writing a file's
+            // content is exactly how a conflict at `path` gets resolved, while
+            // unrelated conflicts stay conflicted.
             let parent = mut_repo
                 .store()
                 .get_commit(&base)
@@ -310,22 +383,19 @@ pub async fn write_file(
                 .map_err(|e| RepoError::Other(format!("write file: {e}")))?;
             let repo_path = RepoPathBuf::from_internal_string(path)
                 .map_err(|e| RepoError::Other(format!("bad path {path:?}: {e}")))?;
-            let tree = parent.tree();
-            let mut builder = TreeBuilder::new(store_.clone(), store_.empty_tree_id().clone());
-            collect_tree(&tree, "", &mut builder).await?;
-            builder.set(
+            let mut builder = MergedTreeBuilder::new(parent.tree());
+            builder.set_or_remove(
                 repo_path,
-                TreeValue::File {
+                Merge::normal(TreeValue::File {
                     id: file_id,
                     executable: false,
                     copy_id: CopyId::placeholder(),
-                },
+                }),
             );
-            let tree_id = builder
+            let merged = builder
                 .write_tree()
                 .await
                 .map_err(|e| RepoError::Other(format!("write tree: {e}")))?;
-            let merged = jj_lib::merged_tree::MergedTree::resolved(store_, tree_id);
 
             // Amend = rewrite the head commit (change stays immutable: one
             // commit per change in visible history). A root/empty head has no
@@ -368,34 +438,13 @@ pub async fn write_file(
             EditOutcome {
                 sha: commit.id().hex(),
                 change_id: commit.change_id().reverse_hex(),
-                op_id: String::new(),
             }
         };
-        let committed = tx
-            .commit("jjlab: write file")
+        tx.commit("jjlab: write file")
             .await
             .map_err(|e| RepoError::Other(e.to_string()))?;
-        let op_id = committed.operation().id().hex();
-        Ok::<(EditOutcome, String), RepoError>((outcome, op_id))
+        Ok::<EditOutcome, RepoError>(outcome)
     })?;
-
-    let mut outcome = outcome;
-    outcome.op_id = op_id.clone();
-    record_op(
-        db,
-        &format!("{org}/{repo}"),
-        "write",
-        &op_id,
-        serde_json::json!({
-            "jj_op_id": op_id,
-            "path": path,
-            "branch": branch,
-            "sha": outcome.sha,
-            "change_id": outcome.change_id,
-            "amend": amend,
-            "message": message,
-        }),
-    );
 
     project::project_repo(store, db, org, repo).await?;
     // Writing a workflow file syncs it and (per push semantics) enqueues runs.
@@ -435,13 +484,12 @@ pub async fn delete_file(
         timestamp: jj_lib::backend::Timestamp::now(),
     };
     let repo_arc = handle.repo.clone();
-    let base = pollster::block_on(async { resolve_commit(&repo_arc, branch) })?;
+    let base = pollster::block_on(async { crate::read::resolve_snapshot(&repo_arc, branch) })?;
 
-    let (outcome, op_id) = pollster::block_on(async {
+    let outcome = pollster::block_on(async {
         let mut tx = handle.repo.start_transaction();
         let outcome = {
             let mut_repo = tx.repo_mut();
-            let store_ = mut_repo.store().clone();
             let parent = mut_repo
                 .store()
                 .get_commit(&base)
@@ -449,15 +497,14 @@ pub async fn delete_file(
 
             let repo_path = RepoPathBuf::from_internal_string(path)
                 .map_err(|e| RepoError::Other(format!("bad path {path:?}: {e}")))?;
-            let tree = parent.tree();
-            let mut builder = TreeBuilder::new(store_.clone(), store_.empty_tree_id().clone());
-            collect_tree(&tree, "", &mut builder).await?;
-            builder.remove(repo_path);
-            let tree_id = builder
+            // Remove the path from the head's merged tree, preserving any other
+            // first-class conflicts (deleting a file resolves only its conflict).
+            let mut builder = MergedTreeBuilder::new(parent.tree());
+            builder.set_or_remove(repo_path, Merge::absent());
+            let merged = builder
                 .write_tree()
                 .await
                 .map_err(|e| RepoError::Other(format!("write tree: {e}")))?;
-            let merged = jj_lib::merged_tree::MergedTree::resolved(store_, tree_id);
 
             let can_amend = amend && base != mut_repo.store().root_commit_id().clone();
             let commit = if can_amend {
@@ -494,74 +541,14 @@ pub async fn delete_file(
             EditOutcome {
                 sha: commit.id().hex(),
                 change_id: commit.change_id().reverse_hex(),
-                op_id: String::new(),
             }
         };
-        let committed = tx
-            .commit("jjlab: delete file")
+        tx.commit("jjlab: delete file")
             .await
             .map_err(|e| RepoError::Other(e.to_string()))?;
-        let op_id = committed.operation().id().hex();
-        Ok::<(EditOutcome, String), RepoError>((outcome, op_id))
+        Ok::<EditOutcome, RepoError>(outcome)
     })?;
-
-    let mut outcome = outcome;
-    outcome.op_id = op_id.clone();
-    record_op(
-        db,
-        &format!("{org}/{repo}"),
-        "delete",
-        &op_id,
-        serde_json::json!({
-            "jj_op_id": op_id,
-            "path": path,
-            "branch": branch,
-            "sha": outcome.sha,
-            "change_id": outcome.change_id,
-            "amend": amend,
-            "message": message,
-        }),
-    );
 
     project::project_repo(store, db, org, repo).await?;
     Ok(outcome)
-}
-
-/// Recursively materialize a (resolved) tree into the builder.
-async fn collect_tree(
-    tree: &jj_lib::merged_tree::MergedTree,
-    prefix: &str,
-    builder: &mut TreeBuilder,
-) -> Result<(), RepoError> {
-    for (path_buf, value_res) in tree.entries() {
-        let value = value_res
-            .map_err(|e| RepoError::Other(format!("tree entry: {e}")))?;
-        let resolved = value
-            .into_resolved()
-            .map_err(|_| RepoError::Conflict("conflicted tree".to_string()))?;
-        let Some(entry) = resolved else { continue };
-        let full = if prefix.is_empty() {
-            path_buf.into_internal_string()
-        } else {
-            format!("{prefix}/{}", path_buf.into_internal_string())
-        };
-        match entry {
-            TreeValue::File { id, executable, copy_id } => {
-                let p = RepoPathBuf::from_internal_string(&full)
-                    .map_err(|e| RepoError::Other(format!("bad path {full:?}: {e}")))?;
-                builder.set(
-                    p,
-                    TreeValue::File { id, executable, copy_id },
-                );
-            }
-            TreeValue::Symlink(id) => {
-                let p = RepoPathBuf::from_internal_string(&full)
-                    .map_err(|e| RepoError::Other(format!("bad path {full:?}: {e}")))?;
-                builder.set(p, TreeValue::Symlink(id));
-            }
-            TreeValue::GitSubmodule(_) => {}
-            TreeValue::Tree(_) => {}
-        }
-    }
-    Ok(())
 }

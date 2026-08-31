@@ -21,6 +21,50 @@ pub async fn commit_info(
     Json(json!(info)).into_response()
 }
 
+/// `GET /repos/{org}/{repo}/git/commits/{sha}/diff` — the commit's diff vs its
+/// merged parent trees (`jj show` semantics), the form a "what did this change
+/// do" view resolves to.
+pub async fn commit_diff(
+    State(state): State<AppState>,
+    Path((org, repo, sha)): Path<(String, String, String)>,
+) -> Response {
+    let store = state.store.clone();
+    let patch = match run_jj(move || {
+        pollster::block_on(jjlab_git::read::commit_patch_merged(
+            &store, &org, &repo, &sha,
+        ))
+    })
+    .await
+    {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "diff": patch })).into_response()
+}
+
+/// `GET /repos/{org}/{repo}/annotate/{*path}?rev=` — line-by-line origin
+/// annotation (jj-native `file annotate`). `rev` is a strict snapshot
+/// (sha/bookmark/tag); each line reports the origin commit + its change-id.
+pub async fn annotate_file(
+    State(state): State<AppState>,
+    Path((org, repo, path)): Path<(String, String, String)>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let rev = q.get("rev").cloned().unwrap_or_default();
+    let store = state.store.clone();
+    let lines = match run_jj(move || {
+        pollster::block_on(jjlab_git::read::annotate_file(
+            &store, &org, &repo, &rev, &path,
+        ))
+    })
+    .await
+    {
+        Ok(l) => l,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "annotations": lines })).into_response()
+}
+
 pub async fn list_branches(
     State(state): State<AppState>,
     Path((org, repo)): Path<(String, String)>,
@@ -68,25 +112,27 @@ pub async fn tree_at_sha(
     Json(json!({ "tree": entries })).into_response()
 }
 
-// ── jj-native: change addressed read ──
+// ── change list (rev-anchored, like commits/files) ──
 
-pub async fn change_info(
+/// `GET /repos/{org}/{repo}/changes?rev=` — list changes reachable from a
+/// snapshot rev. Each change-id resolves to a single visible commit in that
+/// rev's history (no cross-branch divergence ambiguity).
+pub async fn list_changes(
     State(state): State<AppState>,
-    Path((org, repo, change_id)): Path<(String, String, String)>,
+    Path((org, repo)): Path<(String, String)>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
+    let rev = q.get("rev").cloned().unwrap_or_default();
     let store = state.store.clone();
-    let info = match run_jj(move || {
-        pollster::block_on(jjlab_git::read::change_info(
-            &store,
-            &org,
-            &repo,
-            &change_id,
+    let changes = match run_jj(move || {
+        pollster::block_on(jjlab_git::read::list_changes(
+            &store, &org, &repo, &rev,
         ))
     })
     .await
     {
-        Ok(i) => i,
+        Ok(c) => c,
         Err(resp) => return resp,
     };
-    Json(json!(info)).into_response()
+    Json(json!({ "changes": changes })).into_response()
 }

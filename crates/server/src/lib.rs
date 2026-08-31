@@ -1,5 +1,5 @@
 //! HTTP facade (REST). Git-aligned read surface (commit-addressed) plus
-//! jj-native change/conflict/op-log reads, and mirror sync (clone/fetch/push).
+//! jj-native change/conflict reads, and mirror sync (clone/fetch/push).
 //!
 //! Paths follow Gitea's `/repos/{org}/{repo}` shape. Commits are commit-
 //! addressed; change-id is an extra (jj-native) addressing scheme, never a
@@ -94,13 +94,22 @@ pub struct RenameRepoBody {
 
 #[derive(Deserialize)]
 pub struct BranchBody {
-    /// Commit sha / change-id / bookmark to point the branch at.
+    /// Snapshot to point the branch at: commit-sha / bookmark / tag.
+    #[serde(default)]
     target: String,
+    /// Alternative: a change-id (resolved to its current commit).
+    #[serde(default)]
+    change: String,
 }
 
 #[derive(Deserialize)]
 pub struct TagBody {
+    /// Snapshot to point the tag at: commit-sha / bookmark / tag.
+    #[serde(default)]
     target: String,
+    /// Alternative: a change-id (resolved to its current commit).
+    #[serde(default)]
+    change: String,
 }
 
 #[derive(Deserialize)]
@@ -209,7 +218,7 @@ fn default_workdir() -> String {
     "/workspace".to_string()
 }
 
-/// Register a namespace at runtime (write-token gated).
+/// Register a runtime namespace (write-token gated).
 #[derive(Deserialize)]
 pub struct NamespaceBody {
     pub namespace: String,
@@ -221,6 +230,13 @@ pub struct ScaleBody {
     pub replicas: i32,
     #[serde(default)]
     pub namespace: Option<String>,
+}
+
+/// Rebase one snapshot onto another, advancing the dest bookmark.
+#[derive(Deserialize)]
+pub struct RebaseBody {
+    pub source: String,
+    pub dest: String,
 }
 
 /// Rollback a helm release to a revision.
@@ -461,16 +477,16 @@ pub fn build_router(state: AppState) -> axum::Router {
             .route("/api/v1/repos/{org}/{repo}/{branch}/search", get(search_handler))
             // Git-aligned read surface (commit-addressed).
             .route("/api/v1/repos/{org}/{repo}/git/commits/{sha}", get(commit_info))
+            .route("/api/v1/repos/{org}/{repo}/git/commits/{sha}/diff", get(commit_diff))
             .route("/api/v1/repos/{org}/{repo}/branches", get(list_branches))
             .route("/api/v1/repos/{org}/{repo}/raw/{*path}", get(raw_file))
+            .route("/api/v1/repos/{org}/{repo}/annotate/{*path}", get(annotate_file))
             .route("/api/v1/repos/{org}/{repo}/tree/{sha}", get(tree_at_sha))
-            // jj-native: change (change-id-addressed) read.
-            .route("/api/v1/repos/{org}/{repo}/changes/{change_id}", get(change_info))
-            // Metadata + op-log (jj-native).
-            .route("/api/v1/repos/{org}/{repo}/op-log", get(list_op_log))
+            // jj-native: change list anchored to a snapshot rev (like commits/files).
+            .route("/api/v1/repos/{org}/{repo}/changes", get(list_changes))
+            // Metadata (jj-native) — conflicts + bookmarks.
             .route("/api/v1/repos/{org}/{repo}/conflicts", get(list_conflicts))
             .route("/api/v1/repos/{org}/{repo}/bookmarks", get(list_bookmarks))
-            .route("/api/v1/repos/{org}/{repo}/change-ids", get(list_change_ids))
             // Mirror sync (Gitea-aligned names).
             .route("/api/v1/repos/{org}/{repo}/sync/clone", post(clone_remote))
             .route("/api/v1/repos/{org}/{repo}/mirror-sync", post(fetch_remote))
@@ -489,6 +505,7 @@ pub fn build_router(state: AppState) -> axum::Router {
                 "/api/v1/repos/{org}/{repo}/contents/{*path}",
                 post(create_file).put(update_file).delete(delete_file_handler),
             )
+            .route("/api/v1/repos/{org}/{repo}/rebase", post(rebase_handler))
             // Extended read surface (E), Gitea-aligned.
             .route("/api/v1/repos/{org}/{repo}/commits", get(commit_log_handler))
             .route(
@@ -563,13 +580,6 @@ pub fn build_router(state: AppState) -> axum::Router {
                 "/api/v1/repos/{org}/{repo}/actions/jobs/{job_id}/logs",
                 get(job_logs),
             )
-            // Operation log cloud sync (M4).
-            .route("/api/v1/repos/{org}/{repo}/op-log/stream", get(subscribe_ops))
-            .route(
-                "/api/v1/repos/{org}/{repo}/op-log/{op_id}/undo",
-                post(undo_op),
-            )
-            .route("/api/v1/repos/{org}/{repo}/op-head", get(op_head))
             // Orchestration primitives (/ops): purpose-neutral run/service/
             // build/helm/namespace operations consumed by the ops-extension.
             .route("/api/v1/ops/config", get(ops_config))

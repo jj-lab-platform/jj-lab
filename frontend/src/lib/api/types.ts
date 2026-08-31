@@ -11,6 +11,13 @@ export interface CommitInfo {
   parents: string[]
 }
 
+export interface ChangeSummary {
+  change_id: string
+  commit_id: string
+  description: string
+  author: string
+}
+
 export interface BranchInfo {
   name: string
   sha: string
@@ -41,14 +48,6 @@ export interface GraphNode {
   parents: string[]
   edge_types: string[]
   is_head: boolean
-}
-
-export interface OpLogEntry {
-  id: string
-  repo_id: string
-  op_type: string
-  payload: string
-  undo_of: string | null
 }
 
 export interface Conflict {

@@ -11,7 +11,6 @@ pub mod http;
 pub mod ingest;
 pub mod mutation;
 pub mod namespaces;
-pub mod ops;
 pub mod project;
 pub mod read;
 pub mod repo;

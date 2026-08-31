@@ -53,11 +53,11 @@ pub async fn create_release(
     if let Err(resp) = run_jj(move || {
         pollster::block_on(async {
             let repo_arc = jjlab_git::read::open(&store, &org, &repo).await?;
-            match jjlab_git::read::resolve_commit(&repo_arc, &tag) {
+            match jjlab_git::read::resolve_snapshot(&repo_arc, &tag) {
                 Ok(_) => Ok(()),
                 Err(_) => {
                     let head = jjlab_git::read::head_sha(&store, &org, &repo).await?;
-                    jjlab_git::mutation::set_tag(&store, &db2, &org, &repo, &tag, &head)
+                    jjlab_git::mutation::set_tag(&store, &db2, &org, &repo, &tag, &head, "")
                         .await
                         .map(|_| ())
                 }

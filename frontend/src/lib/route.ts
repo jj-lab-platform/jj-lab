@@ -6,7 +6,6 @@ export type Tab =
   | 'branches'
   | 'graph'
   | 'changes'
-  | 'op-log'
   | 'pulls'
   | 'releases'
   | 'actions'
@@ -26,7 +25,6 @@ export const TABS: { id: Tab; label: string }[] = [
   { id: 'branches', label: 'Branches' },
   { id: 'graph', label: 'Graph' },
   { id: 'changes', label: 'Changes' },
-  { id: 'op-log', label: 'Op-log' },
   { id: 'pulls', label: 'Pulls' },
   { id: 'releases', label: 'Releases' },
   { id: 'actions', label: 'Actions' },

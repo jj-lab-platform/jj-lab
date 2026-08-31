@@ -17,7 +17,7 @@ use jj_lib::repo::Repo;
 use jj_lib::repo_path::RepoPathBuf;
 use jj_lib::tree_builder::TreeBuilder;
 
-use jjlab_core::db::{ChangeRow, OpLogRow};
+use jjlab_core::db::ChangeRow;
 use jjlab_core::Db;
 
 use crate::anchor;
@@ -139,21 +139,6 @@ pub async fn ingest_bare_repo(
             })
             .map_err(|e| RepoError::Other(e.to_string()))?;
 
-            let payload = serde_json::json!({
-                "git_sha": git_sha,
-                "change_id": change_id_hex,
-                "commit_id": commit_id_hex,
-            })
-            .to_string();
-            db.append_op_log(&OpLogRow {
-                id: unique_op_id(&git_sha),
-                repo_id: repo_id.clone(),
-                op_type: "ingest".to_string(),
-                payload,
-                undo_of: None,
-            })
-            .map_err(|e| RepoError::Other(e.to_string()))?;
-
             commits_written += 1;
             conflicts_seen += tree_conflicts.len();
             for c in &tree_conflicts {
@@ -193,14 +178,6 @@ pub async fn ingest_bare_repo(
         commits: commits_written,
         conflicts: conflicts_seen,
     })
-}
-
-fn unique_op_id(git_sha: &str) -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("{git_sha}-{nanos}")
 }
 
 struct GitCommit {

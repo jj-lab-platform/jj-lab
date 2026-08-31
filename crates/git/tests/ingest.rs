@@ -71,9 +71,6 @@ async fn ingest_local_repo() {
     assert_eq!(second_anchor.change_id.len(), 32);
     assert_ne!(head_anchor.change_id, second_anchor.change_id);
 
-    // op-log recorded one entry per ingested commit.
-    assert_eq!(db.list_op_log("org/repo").unwrap().len(), 3);
-
     // Change rows are persisted.
     let cid = head_anchor.change_id.clone();
     assert!(db.get_change(&cid).unwrap().is_some());
@@ -96,7 +93,6 @@ async fn ingest_local_repo() {
         .await
         .unwrap();
     assert_eq!(second.commits, 0);
-    assert_eq!(db.list_op_log("org/repo").unwrap().len(), 3);
 }
 
 #[tokio::test]
@@ -120,11 +116,8 @@ async fn metadata_survives_reopen() {
             .unwrap();
     }
 
-    // Reopen the DB and confirm op-log / bookmarks persist (restart replay).
+    // Reopen the DB and confirm bookmarks persist (restart replay).
     let db2 = jjlab_core::Db::open(&db_path).unwrap();
-    let ops = db2.list_op_log("org/repo").unwrap();
-    assert_eq!(ops.len(), 1);
-    assert_eq!(ops[0].op_type, "ingest");
     let bookmarks = db2.list_bookmarks("org/repo").unwrap();
     assert_eq!(bookmarks.len(), 1);
     assert!(!bookmarks[0].change_id.is_empty());

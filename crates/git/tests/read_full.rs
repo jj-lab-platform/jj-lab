@@ -59,7 +59,7 @@ fn ctx() -> (tempfile::TempDir, Arc<jjlab_git::RepoStore>, [String; 2]) {
     (dir, store, [sha1, sha2])
 }
 
-// ── resolve_commit branches ──
+// ── resolve_snapshot branches ──
 
 #[tokio::test]
 async fn resolve_commit_by_full_sha_short_prefix_bookmark_and_root() {
@@ -68,25 +68,25 @@ async fn resolve_commit_by_full_sha_short_prefix_bookmark_and_root() {
 
     // Full sha.
     assert_eq!(
-        jjlab_git::read::resolve_commit(&repo, &sha2).unwrap().hex(),
+        jjlab_git::read::resolve_snapshot(&repo, &sha2).unwrap().hex(),
         sha2
     );
     // Short prefix (7 chars).
     let short = &sha1[..7];
-    let got = jjlab_git::read::resolve_commit(&repo, short).unwrap();
+    let got = jjlab_git::read::resolve_snapshot(&repo, short).unwrap();
     assert_eq!(got.hex(), sha1);
     // Bookmark name.
     let branches = jjlab_git::read::branches(&store, "o", "r").await.unwrap();
     let bm = &branches[0].name;
-    assert!(jjlab_git::read::resolve_commit(&repo, bm).is_ok());
+    assert!(jjlab_git::read::resolve_snapshot(&repo, bm).is_ok());
     // Ambiguous 1-char prefix → error (multiple commits share the first hex char
     // only if both start with the same digit; 1-char prefixes are near-certainly
     // ambiguous across 3+ commits; if single, still fine). Accept both.
-    let _ = jjlab_git::read::resolve_commit(&repo, "z");
+    let _ = jjlab_git::read::resolve_snapshot(&repo, "z");
     // Unknown rev errors.
-    assert!(jjlab_git::read::resolve_commit(&repo, "ffffffffffffffffffffffffffffffffffffffff").is_err());
+    assert!(jjlab_git::read::resolve_snapshot(&repo, "ffffffffffffffffffffffffffffffffffffffff").is_err());
     // Empty rev resolves to a non-root head.
-    let empty = jjlab_git::read::resolve_commit(&repo, "").unwrap();
+    let empty = jjlab_git::read::resolve_snapshot(&repo, "").unwrap();
     assert_ne!(empty.hex(), "0".repeat(64));
     assert!(empty.hex() == sha1 || empty.hex() == sha2);
 }
@@ -109,7 +109,7 @@ async fn commit_log_pagination_and_order() {
     // Newest first: second commit is page 1.
     assert_eq!(page1[0].sha, {
         let repo = jjlab_git::read::open(&store, "o", "r").await.unwrap();
-        jjlab_git::read::resolve_commit(&repo, "master").unwrap().hex()
+        jjlab_git::read::resolve_snapshot(&repo, "master").unwrap().hex()
     });
 }
 
@@ -172,6 +172,7 @@ async fn tags_listing_after_tag_creation() {
         "r",
         "v1",
         &jjlab_git::read::head_sha(&store2, "o", "r").await.unwrap(),
+        "",
     )
     .await
     .unwrap();
@@ -292,7 +293,7 @@ async fn read_blob_directory_and_missing_paths_error() {
     .await
     .unwrap();
     let repo = jjlab_git::read::open(&store, "o", "r").await.unwrap();
-    let id = jjlab_git::read::resolve_commit(&repo, "main").unwrap();
+    let id = jjlab_git::read::resolve_snapshot(&repo, "main").unwrap();
     let commit = repo.store().get_commit(&id).unwrap();
     assert!(jjlab_git::read::read_blob(&commit, "nested").await.is_err());
     assert!(jjlab_git::read::read_blob(&commit, "nested/dir").await.is_err());

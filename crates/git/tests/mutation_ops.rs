@@ -93,7 +93,7 @@ async fn repo_lifecycle_create_write_branch_tag_delete() {
     assert_ne!(out.change_id, out2.change_id);
 
     // 4. Branch ops: create at main's tip, then delete.
-    let sha = jjlab_git::mutation::set_branch(&store, &db, "o", "r", "feature", "main")
+    let sha = jjlab_git::mutation::set_branch(&store, &db, "o", "r", "feature", "main", "")
         .await
         .unwrap();
     let branches = jjlab_git::read::branches(&store, "o", "r").await.unwrap();
@@ -105,7 +105,7 @@ async fn repo_lifecycle_create_write_branch_tag_delete() {
     assert!(!branches.iter().any(|b| b.name == "feature"));
 
     // 5. Tag ops.
-    let tsha = jjlab_git::mutation::set_tag(&store, &db, "o", "r", "v1", "main")
+    let tsha = jjlab_git::mutation::set_tag(&store, &db, "o", "r", "v1", "main", "")
         .await
         .unwrap();
     let tags = jjlab_git::read::tags(&store, "o", "r").await.unwrap();
@@ -185,7 +185,7 @@ async fn amend_rewrites_head_not_extends() {
     .unwrap();
     // The rewritten head must keep the ORIGINAL parent (not the old head).
     let repo = jjlab_git::read::open(&store, "o", "r").await.unwrap();
-    let id = jjlab_git::read::resolve_commit(&repo, "main").unwrap();
+    let id = jjlab_git::read::resolve_snapshot(&repo, "main").unwrap();
     let commit = repo.store().get_commit(&id).unwrap();
     let parent_ids: Vec<String> = commit.parent_ids().iter().map(|p| p.hex()).collect();
     assert!(
@@ -219,69 +219,6 @@ async fn delete_repo_missing_is_404() {
     let (store, _db, _url) = seed_remote(tmp.path());
     let err = jjlab_git::mutation::delete_repo(&store, "o", "ghost").await;
     assert!(err.is_err());
-}
-
-// ── undo (ops.rs) ──
-
-#[tokio::test]
-async fn undo_rolls_back_write_file_exactly() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (store, db, _url) = seed_remote(tmp.path());
-    jjlab_git::mutation::create_repo(&store, &db, "o", "r", "main", author())
-        .await
-        .unwrap();
-    let before = jjlab_git::read::head_sha(&store, "o", "r").await.unwrap();
-
-    jjlab_git::mutation::write_file(&store, &db, "o", "r", "main", "x.txt", b"x\n", "add x", author(), false)
-        .await
-        .unwrap();
-    let after_write = jjlab_git::read::head_sha(&store, "o", "r").await.unwrap();
-    assert_ne!(before, after_write);
-
-    // Undo the last op-log entry (a project op follows the write; the undo
-    // walks back past bookkeeping to revert the write itself).
-    let ops = db.list_op_log("o/r").unwrap();
-    let last = ops.last().unwrap().id.clone();
-    let ev = jjlab_git::ops::undo_operation(&store, &db, "o", "r", &last)
-        .await
-        .expect("undo");
-    assert_eq!(ev.undo_of.as_deref(), Some(last.as_str()));
-
-    let after_undo = jjlab_git::read::head_sha(&store, "o", "r").await.unwrap();
-    assert_eq!(
-        after_undo, before,
-        "undo must restore the exact pre-write head"
-    );
-    assert!(jjlab_git::read::raw_at_head(&store, "o", "r", "x.txt")
-        .await
-        .is_err());
-}
-
-#[tokio::test]
-async fn undo_of_an_undo_is_rejected() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (store, db, _url) = seed_remote(tmp.path());
-    jjlab_git::mutation::create_repo(&store, &db, "o", "r", "main", author())
-        .await
-        .unwrap();
-    let ops = db.list_op_log("o/r").unwrap();
-    let last = ops.last().unwrap().id.clone();
-    let ev = jjlab_git::ops::undo_operation(&store, &db, "o", "r", &last)
-        .await
-        .expect("first undo");
-    // Undoing an undo op must be refused.
-    let err = jjlab_git::ops::undo_operation(&store, &db, "o", "r", &ev.id).await;
-    assert!(err.is_err(), "chained undo must be rejected");
-}
-
-#[tokio::test]
-async fn undo_unknown_op_errors() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (store, db, _url) = seed_remote(tmp.path());
-    jjlab_git::mutation::create_repo(&store, &db, "o", "r", "main", author())
-        .await
-        .unwrap();
-    assert!(jjlab_git::ops::undo_operation(&store, &db, "o", "r", "does-not-exist").await.is_err());
 }
 
 // ── projection (project.rs) ──
@@ -325,7 +262,7 @@ async fn force_push_reassociates_open_mr_head() {
     .await
     .unwrap();
     assert_ne!(first.sha, base_sha, "write must advance the base branch");
-    jjlab_git::mutation::set_branch(&store, &db, "o", "r", "feature", &first.sha)
+    jjlab_git::mutation::set_branch(&store, &db, "o", "r", "feature", &first.sha, "")
         .await
         .unwrap();
 
