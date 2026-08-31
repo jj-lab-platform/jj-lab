@@ -191,7 +191,6 @@ impl Db {
                 .map_err(|e| Error::Db(format!("db get: {e}")))?;
             conn.execute_batch(SCHEMA)
                 .map_err(|e| Error::Db(format!("db schema: {e}")))?;
-            migrate(&conn)?;
         }
         Ok(Self { pool: Arc::new(pool) })
     }
@@ -1551,40 +1550,6 @@ CREATE TABLE IF NOT EXISTS op_log (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
 );
 "#;
-
-/// Idempotent schema migration: add the `commit_id` column to `change_id_map`
-/// for databases created before it existed.
-fn migrate(conn: &Connection) -> Result<()> {
-    // change_id_map.commit_id
-    let has_commit_id = column_exists(conn, "change_id_map", "commit_id")?;
-    if !has_commit_id {
-        conn.execute_batch("ALTER TABLE change_id_map ADD COLUMN commit_id TEXT")
-            .map_err(|e| Error::Db(format!("migrate change_id_map: {e}")))?;
-    }
-    // merge_requests.head_branch (added in M3 for force-push re-association)
-    let has_head_branch = column_exists(conn, "merge_requests", "head_branch")?;
-    if !has_head_branch {
-        conn.execute_batch("ALTER TABLE merge_requests ADD COLUMN head_branch TEXT")
-            .map_err(|e| Error::Db(format!("migrate merge_requests: {e}")))?;
-    }
-    Ok(())
-}
-
-fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
-    let mut stmt = conn
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(|e| Error::Db(format!("migrate pragma: {e}")))?;
-    let rows = stmt
-        .query_map([], |r| r.get::<_, String>(1))
-        .map_err(|e| Error::Db(format!("migrate pragma map: {e}")))?;
-    for row in rows {
-        let name = row.map_err(|e| Error::Db(format!("migrate pragma row: {e}")))?;
-        if name == column {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1602,48 +1567,15 @@ mod tests {
         repo_id
     }
 
-    // ── migrations ──
+    // ── open ──
 
     #[test]
-    fn open_is_idempotent_and_migrates_twice() {
+    fn open_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("m.db");
         Db::open(&path).unwrap();
-        // Second open runs migrate() again — must not fail.
+        // Second open is a no-op (SCHEMA is CREATE TABLE IF NOT EXISTS).
         Db::open(&path).unwrap();
-    }
-
-    #[test]
-    fn migration_adds_missing_columns() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("old.db");
-        {
-            let conn = Connection::open(&path).unwrap();
-            // Pre-M3/M5 schema: merge_requests without head_branch.
-            conn.execute_batch(
-                "CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL);
-                 CREATE TABLE repos (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, name TEXT NOT NULL);
-                 CREATE TABLE merge_requests (
-                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                     repo_id TEXT NOT NULL,
-                     number INTEGER NOT NULL,
-                     title TEXT NOT NULL,
-                     head_change_id TEXT NOT NULL,
-                     UNIQUE (repo_id, number)
-                 );",
-            )
-            .unwrap();
-        }
-        Db::open(&path).unwrap(); // migrate
-        let cols: Vec<String> = {
-            let conn = Connection::open(&path).unwrap();
-            let mut stmt = conn.prepare("PRAGMA table_info(merge_requests)").unwrap();
-            stmt.query_map([], |r| r.get::<_, String>(1))
-                .unwrap()
-                .filter_map(|r| r.ok())
-                .collect()
-        };
-        assert!(cols.contains(&"head_branch".to_string()));
     }
 
     // ── MR lifecycle ──
