@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { DropdownMenu } from '$lib/components/ui/dropdown-menu'
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import { Check, Moon, Palette, Sun } from '@lucide/svelte'
   import {
     ALL_THEMES,

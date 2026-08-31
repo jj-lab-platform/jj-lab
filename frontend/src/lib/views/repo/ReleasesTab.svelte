@@ -15,7 +15,7 @@
   <Textarea.Root placeholder="release notes" bind:value={app.relBody} />
   <div class="flex items-center gap-3">
     <label class="flex items-center gap-2 text-xs"><input type="checkbox" bind:checked={app.relPre} /> pre-release</label>
-    <button class="g-btn tiny primary" onclick={app.doCreateRelease}>Publish release</button>
+    <button class="g-btn tiny primary" onclick={() => app.doCreateRelease()}>Publish release</button>
   </div>
 </div>
 <div class="space-y-3">

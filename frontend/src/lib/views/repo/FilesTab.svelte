@@ -32,13 +32,13 @@
         {/each}
       </div>
       <div class="ml-auto flex gap-1.5">
-        <button class="g-btn tiny basic" onclick={app.loadFileLog}>History</button>
+        <button class="g-btn tiny basic" onclick={() => app.loadFileLog()}>History</button>
         {#if app.editing}
-          <button class="g-btn tiny primary" onclick={app.saveFile}>Save</button>
+          <button class="g-btn tiny primary" onclick={() => app.saveFile()}>Save</button>
           <button class="g-btn tiny" onclick={() => { app.editing = false; app.editContent = app.fileData?.content ?? '' }}>Cancel</button>
         {:else}
-          <button class="g-btn tiny basic" onclick={app.startEdit}>Edit</button>
-          <button class="g-btn tiny red" onclick={app.removeFile}>Delete</button>
+          <button class="g-btn tiny basic" onclick={() => app.startEdit()}>Edit</button>
+          <button class="g-btn tiny red" onclick={() => app.removeFile()}>Delete</button>
         {/if}
       </div>
     </div>
@@ -51,7 +51,7 @@
             <input type="checkbox" bind:checked={app.editAmend} />
             amend head change
           </label>
-          <button class="g-btn tiny primary" onclick={app.saveFile}>Commit</button>
+          <button class="g-btn tiny primary" onclick={() => app.saveFile()}>Commit</button>
         </div>
       </div>
     {:else if app.fileData}
@@ -68,7 +68,7 @@
       {#if app.tree.length === 0}
         <p class="p-3 text-xs g-subtle">Empty repository</p>
       {:else}
-        <TreeNode entries={app.tree} expanded={app.expandedDirs} selectedPath={null} onToggle={app.toggleDir} onOpen={(p) => { app.selectedPath = p; void app.openFile(p); app.nav(`#/${encodeURIComponent(app.route.org!)}/${encodeURIComponent(app.route.repo!)}/blob/${p.split('/').map(encodeURIComponent).join('/')}`) }} />
+        <TreeNode entries={app.tree} expanded={app.expandedDirs} selectedPath={null} onToggle={(p) => app.toggleDir(p)} onOpen={(p) => { app.selectedPath = p; void app.openFile(p); app.nav(`#/${encodeURIComponent(app.route.org!)}/${encodeURIComponent(app.route.repo!)}/blob/${p.split('/').map(encodeURIComponent).join('/')}`) }} />
       {/if}
     </aside>
     <div class="g-repo-content">

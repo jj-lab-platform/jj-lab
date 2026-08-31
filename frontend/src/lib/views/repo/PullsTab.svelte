@@ -48,7 +48,7 @@
             <NativeSelect.Option value="request_changes">Request changes</NativeSelect.Option>
           </NativeSelect.Root>
           <Input.Root class="flex-1" placeholder="review body" bind:value={app.reviewBody} />
-          <button class="g-btn tiny primary" onclick={app.doReview}>Submit</button>
+          <button class="g-btn tiny primary" onclick={() => app.doReview()}>Submit</button>
         </div>
       </div>
       <div class="g-card p-4">
@@ -61,7 +61,7 @@
         {/each}
         <div class="mt-3 flex gap-2">
           <Input.Root class="flex-1" placeholder="comment" bind:value={app.commentBody} />
-          <button class="g-btn tiny" onclick={app.doComment}>Add</button>
+          <button class="g-btn tiny" onclick={() => app.doComment()}>Add</button>
         </div>
       </div>
     </div>
@@ -79,7 +79,7 @@
         <Input.Root class="flex-1" placeholder="base (main)" bind:value={app.newMrBase} />
       </div>
       <Textarea.Root placeholder="description" bind:value={app.newMrBody} />
-      <button class="g-btn tiny primary" onclick={app.doCreateMr}>Create pull request</button>
+      <button class="g-btn tiny primary" onclick={() => app.doCreateMr()}>Create pull request</button>
     </div>
   {/if}
   <div class="g-card overflow-hidden">

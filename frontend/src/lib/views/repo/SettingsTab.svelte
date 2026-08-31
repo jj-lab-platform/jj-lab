@@ -21,7 +21,7 @@
     <div class="mb-1 text-xs font-semibold" style="color:var(--destructive)">Danger zone</div>
     <div class="flex items-center gap-2">
       <Input.Root class="max-w-xs" placeholder="confirm repo name" bind:value={app.renameName} />
-      <button class="g-btn tiny red" disabled={app.renameName !== app.route.repo} onclick={app.doDeleteRepo}>Delete repository</button>
+      <button class="g-btn tiny red" disabled={app.renameName !== app.route.repo} onclick={() => app.doDeleteRepo()}>Delete repository</button>
     </div>
     <p class="mt-1 text-[11px] g-subtle">Type the repository name to enable deletion.</p>
   </div>

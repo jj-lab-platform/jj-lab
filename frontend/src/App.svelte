@@ -156,7 +156,7 @@
       </div>
       <Dialog.Footer>
         <button class="g-btn tiny" onclick={() => (app.createOpen = false)}>Cancel</button>
-        <button class="g-btn tiny primary" disabled={app.working || !app.createOrg || !app.createRepoName} onclick={app.doCreateRepo}>Create</button>
+        <button class="g-btn tiny primary" disabled={app.working || !app.createOrg || !app.createRepoName} onclick={() => app.doCreateRepo()}>Create</button>
       </Dialog.Footer>
     </Dialog.Content>
   </Dialog.Root>
@@ -176,7 +176,7 @@
       </div>
       <Dialog.Footer>
         <button class="g-btn tiny" onclick={() => (app.importOpen = false)}>Cancel</button>
-        <button class="g-btn tiny primary" disabled={app.working || !app.importOrg || !app.importRepoName || !app.importUrl} onclick={app.doImport}>Import</button>
+        <button class="g-btn tiny primary" disabled={app.working || !app.importOrg || !app.importRepoName || !app.importUrl} onclick={() => app.doImport()}>Import</button>
       </Dialog.Footer>
     </Dialog.Content>
   </Dialog.Root>

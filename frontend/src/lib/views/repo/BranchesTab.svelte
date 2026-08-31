@@ -7,11 +7,11 @@
 <div class="mb-3 flex flex-wrap items-center gap-2">
   <Input.Root class="w-40" placeholder="branch name" bind:value={app.newBranchName} />
   <Input.Root class="w-44" placeholder="from (empty=head)" bind:value={app.newBranchFrom} />
-  <button class="g-btn tiny primary" onclick={app.doCreateBranch}><Plus class="size-3.5" /> Branch</button>
+  <button class="g-btn tiny primary" onclick={() => app.doCreateBranch()}><Plus class="size-3.5" /> Branch</button>
   <span class="mx-2 g-muted">|</span>
   <Input.Root class="w-36" placeholder="tag name" bind:value={app.newTagName} />
   <Input.Root class="w-36" placeholder="from" bind:value={app.newTagFrom} />
-  <button class="g-btn tiny" onclick={app.doCreateTag}><Tag class="size-3.5" /> Tag</button>
+  <button class="g-btn tiny" onclick={() => app.doCreateTag()}><Tag class="size-3.5" /> Tag</button>
 </div>
 <h3 class="mb-2 text-xs font-semibold g-muted">Branches</h3>
 <div class="g-card overflow-hidden">

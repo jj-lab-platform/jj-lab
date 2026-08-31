@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { DropdownMenu } from '$lib/components/ui/dropdown-menu'
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import * as Input from '$lib/components/ui/input'
   import { KeyRound } from '@lucide/svelte'
   import { getToken, setToken } from '$lib/api'
