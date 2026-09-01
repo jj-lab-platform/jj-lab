@@ -9,7 +9,7 @@ fullnameOverride: "jj-lab"
 # --- runtime image (built from ~/jj-lab and pushed to the temp artifact) ---
 image:
   repository: artifact.temp.svc.cluster.local/jj-lab
-  tag: "v0.2.0"
+  tag: "v0.3.2"
   pullPolicy: Always
 
 replicaCount: 1
