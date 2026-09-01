@@ -357,11 +357,24 @@ async fn download(
             }
         }
     }
-    // Pull-through from static.crates.io.
+    // Pull-through. Prefer the configured `cargo.static` upstream using the
+    // crates.io-style `/api/v1/crates/{name}/{version}/download` shape (an
+    // upstream registry such as the old artifact exposes that); fall back to
+    // the static.crates.io flat `/crates/{name}-{version}.crate` form when a
+    // bare path is given.
     if let Some(remote) = st.registry.remote_sub("cargo", "static") {
-        if let Ok(data) =
-            remote.get_bytes(&format!("/{}/{name}-{version}.crate", urlencode(&name))).await
-        {
+        let name_enc = urlencode(&name);
+        let crate_path = format!("/{}/{name}-{version}.crate", name_enc);
+        let api_path = format!("/api/v1/crates/{}/{version}/download", name_enc);
+        tracing::debug!(crate_name = %name, crate_path = %crate_path, api_path = %api_path, base = %remote.base(), "cargo pull-through candidate paths");
+        let data = match remote.get_bytes(&crate_path).await {
+            Ok(d) => Some(d),
+            Err(e) => {
+                tracing::debug!(err = %e, path = %crate_path, "cargo crate_path miss; trying api_path");
+                remote.get_bytes(&api_path).await.ok()
+            }
+        };
+        if let Some(data) = data {
             store_version_src(&st, &name, &version, data.clone(), "pull").await;
             return blob_response(data, &filename);
         }

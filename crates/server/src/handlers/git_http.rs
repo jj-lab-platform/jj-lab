@@ -53,6 +53,15 @@ pub async fn smart_http_info_refs(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Per-repo import serialization: git's HTTP push protocol may run two
+/// receive-pack RPCs back-to-back (empirically observed); concurrent jj imports
+/// on the same repo panic ("Descendants have not been rebased") and leave the
+/// view stale. A keyed mutex makes the second import wait, then no-op cleanly.
+fn import_locks() -> &'static std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>> {
+    static LOCKS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>> = std::sync::OnceLock::new();
+    LOCKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
 pub async fn smart_http_rpc(
     state: State<AppState>,
     org: String,
@@ -101,12 +110,24 @@ pub async fn smart_http_rpc(
             if service == jjlab_git::http::GitService::ReceivePack && ok {
                 // Received a pack: import refs so the pushed commits become
                 // native jj changes (change-id header preserved), then project
-                // the view into SQLite.
+                // the view into SQLite. Serialized per repo (see import_locks);
+                // failures are logged (never silently swallowed) — a stale jj
+                // view after a successful push is a real bug and must be
+                // visible.
                 let store = state.store.clone();
                 let db = state.db.clone();
+                let (org2, repo2) = (org.clone(), repo.clone());
                 let org = org.clone();
                 let repo = repo.clone();
-                let _ = run_jj(move || {
+                let key = format!("{org}/{repo}");
+                let lock = import_locks()
+                    .lock()
+                    .unwrap()
+                    .entry(key)
+                    .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+                    .clone();
+                let _guard = lock.lock().await;
+                let imported = run_jj(move || {
                     pollster::block_on(jjlab_git::sync::import_after_receive(
                         &store,
                         &db,
@@ -115,6 +136,11 @@ pub async fn smart_http_rpc(
                     ))
                 })
                 .await;
+                if let Err(resp) = imported {
+                    tracing::error!(org = %org2, repo = %repo2, "receive-pack: jj import failed: {}", pretty_resp(resp).await);
+                } else {
+                    tracing::info!(org = %org2, repo = %repo2, "receive-pack: jj import ok");
+                }
             }
             (
                 StatusCode::OK,
@@ -166,4 +192,16 @@ pub async fn smart_http_post(
         _ => return smart_http_error(StatusCode::NOT_FOUND, "not a git endpoint".into()),
     };
     smart_http_rpc(state, org, repo.to_string(), svc, headers, body).await
+}
+
+/// Render an axum `Response` for logging: status + JSON message field when
+/// present (run_jj errors arrive as Gitea-style `{"message": ...}`).
+async fn pretty_resp(resp: axum::response::Response) -> String {
+    let status = resp.status();
+    let body = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap_or_default();
+    let msg = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(str::to_string))
+        .unwrap_or_else(|| String::from_utf8_lossy(&body).to_string());
+    format!("HTTP {status}: {msg}")
 }

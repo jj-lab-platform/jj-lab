@@ -74,6 +74,8 @@ spec:
               value: {{ .Values.ci.jobTimeout | quote }}
             - name: JJLAB_SELF_URL
               value: {{ .Values.selfUrl | quote }}
+            - name: JJLAB_OPS_NAMESPACES
+              value: {{ .Values.opsNamespaces | quote }}
           readinessProbe:
             httpGet:
               path: /api/v1/health

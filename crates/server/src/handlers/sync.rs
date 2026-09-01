@@ -47,13 +47,27 @@ pub async fn ops_service_sync(
         return json_err(StatusCode::BAD_REQUEST, "org/repo/rev required".into());
     }
 
+    // Resolve the rev to its commit sha FIRST: the cache is keyed on the
+    // resolved sha (not the literal rev string), so a bookmark move ("main"
+    // now points elsewhere) correctly invalidates the cached sync.
+    let store2 = state.store.clone();
+    let (o2, r2, rev2) = (body.org.clone(), body.repo.clone(), body.rev.clone());
+    let sha = match run_jj(move || {
+        pollster::block_on(jjlab_git::read::resolve_rev(&store2, &o2, &r2, &rev2)).map(|(_, sha)| sha)
+    })
+    .await
+    {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+
     // Skip when the worker is already at this rev (unless forced).
     let force = q.get("force").map(|v| v == "1" || v == "true").unwrap_or(false);
     let cache_key = format!("{ns}/{name}");
     if !force {
         let cached = state.sync_cache.0.lock().await.get(&cache_key).cloned();
-        if cached.as_deref() == Some(body.rev.as_str()) {
-            return Json(json!({ "ok": true, "skipped": true, "rev": body.rev })).into_response();
+        if cached.as_deref() == Some(sha.as_str()) {
+            return Json(json!({ "ok": true, "skipped": true, "rev": sha })).into_response();
         }
     }
 
@@ -80,9 +94,10 @@ pub async fn ops_service_sync(
         return json_err(StatusCode::CONFLICT, format!("service {name} has no pod IP yet"));
     }
 
-    // Materialize the repo tarball (blocking jj → spawn_blocking).
+    // Materialize the repo tarball (blocking jj → spawn_blocking), pinned to
+    // the resolved sha.
     let store = state.store.clone();
-    let (org, repo, rev) = (body.org.clone(), body.repo.clone(), body.rev.clone());
+    let (org, repo, rev) = (body.org.clone(), body.repo.clone(), sha.clone());
     let ball = match run_jj(move || {
         pollster::block_on(jjlab_git::read::archive_tarball(&store, &org, &repo, &rev))
     })
@@ -107,13 +122,13 @@ pub async fn ops_service_sync(
         .await;
     match reply {
         Ok(resp) if resp.status().is_success() => {
-            state.sync_cache.0.lock().await.insert(cache_key, body.rev.clone());
+            state.sync_cache.0.lock().await.insert(cache_key, sha.clone());
             let text = resp.text().await.unwrap_or_default();
             let files = serde_json::from_str::<serde_json::Value>(&text)
                 .ok()
                 .and_then(|v| v.get("files").and_then(|f| f.as_i64()))
                 .unwrap_or(0);
-            Json(json!({ "ok": true, "skipped": false, "files": files, "rev": body.rev }))
+            Json(json!({ "ok": true, "skipped": false, "files": files, "rev": sha }))
                 .into_response()
         }
         Ok(resp) => {

@@ -518,6 +518,16 @@ pub async fn import_after_receive(
             import_refs(mut_repo, &options)
                 .await
                 .map_err(|e| RepoError::Other(e.to_string()))?;
+            // Importing existing history rewrites commits (synthetic
+            // predecessors / abandon); those rewrites' descendants must be
+            // rebased before commit, or jj's transaction consistency assert
+            // panics ("Descendants have not been rebased"). rebase_descendants
+            // folds those rewrites into the view so commit() succeeds. Errors
+            // here surface as a 500 (never silently swallowed upstream).
+            mut_repo
+                .rebase_descendants()
+                .await
+                .map_err(|e| RepoError::Other(format!("rebase descendants: {e}")))?;
         }
         tx.commit("jjlab: receive-pack import")
             .await
