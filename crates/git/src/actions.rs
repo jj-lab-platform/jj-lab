@@ -542,8 +542,7 @@ pub async fn on_pull_request(
 }
 
 /// Dispatch a scheduled workflow run at `head` (dedup: one run per workflow
-/// per minute — enforced by the caller's minute key in the run's trigger_ref
-/// annotation; here we simply enqueue).
+/// per minute — a run enqueued <60s ago suppresses re-enqueue).
 pub async fn dispatch_scheduled(
     store: Arc<RepoStore>,
     db: Arc<jjlab_core::Db>,
@@ -571,6 +570,10 @@ pub async fn dispatch_scheduled(
                 })?;
             let wf = serde_yaml::from_str::<WorkflowFile>(&String::from_utf8_lossy(&raw))
                 .map_err(|e| RepoError::Other(format!("parse workflow: {e}")))?;
+            // Minute dedup: skip when a run of this workflow was enqueued <60s ago.
+            if db.workflow_ran_recently(workflow_id, 60).unwrap_or(false) {
+                return Ok(false);
+            }
             enqueue_run(&db, &org, &repo, workflow_id, &head, &wf, &logs_root)?;
             Ok(true)
         })

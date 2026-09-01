@@ -1138,6 +1138,21 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
         Ok(conn.last_insert_rowid())
     }
 
+    /// True when the workflow had a run created within the last `secs`.
+    pub fn workflow_ran_recently(&self, workflow_id: i64, secs: i64) -> Result<bool> {
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM runs
+                 WHERE workflow_id = ?1 AND status IN ('queued','running')
+                   AND created_at >= datetime('now', '-' || ?2 || ' seconds')",
+                rusqlite::params![workflow_id, secs],
+                |r| r.get(0),
+            )
+            .map_err(|e| Error::Db(format!("recent run check: {e}")))?;
+        Ok(n > 0)
+    }
+
     /// Workflows with a schedule cron expression, across all repos.
     pub fn scheduled_workflows(&self) -> Result<Vec<(i64, String, String, String)>> {
         let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
