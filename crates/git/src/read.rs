@@ -240,17 +240,6 @@ pub async fn branches(
     Ok(list_branches(&repo))
 }
 
-/// Read a file at the current head. `*path` may be empty (root tree).
-pub async fn raw_at_head(
-    store: &Arc<RepoStore>,
-    org: &str,
-    repo: &str,
-    path: &str,
-) -> Result<Vec<u8>, RepoError> {
-    let sha = head_sha(store, org, repo).await?;
-    read_file_at(store, org, repo, &sha, path).await
-}
-
 /// List the tree at a commit (sha) — root if `sha` is empty.
 pub async fn tree_at_sha(
     store: &Arc<RepoStore>,

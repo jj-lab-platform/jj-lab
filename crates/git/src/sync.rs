@@ -320,6 +320,73 @@ pub async fn fetch_remote(
     })
 }
 
+/// Pull a mirror remote: `git fetch` with `--prune`, then import refs and
+/// drop local bookmarks that no longer exist on the remote (mirror semantics —
+/// the remote is the sole source of truth). `remote` names the git remote,
+/// `url` is its fetch URL.
+pub async fn pull_mirror(
+    store: &Arc<RepoStore>,
+    org: &str,
+    repo: &str,
+    remote: &str,
+    url: &str,
+) -> Result<usize, RepoError> {
+    validate_url(url).map_err(RepoError::Invalid)?;
+    let handle = store.open(org, repo).await?;
+    let settings = settings::user_settings().map_err(RepoError::Other)?;
+    let remote_name: jj_lib::ref_name::RemoteNameBuf = remote.to_string().into();
+
+    pollster::block_on(async {
+        let mut tx = handle.repo.start_transaction();
+        let subprocess_options = GitSubprocessOptions::from_settings(&settings)
+            .map_err(|e| RepoError::Other(e.to_string()))?;
+
+        {
+            let mut_repo = tx.repo_mut();
+            let git_repo = jj_lib::git::get_git_repo(mut_repo.store())
+                .map_err(|e| RepoError::Other(e.to_string()))?;
+            let remote_there = match git_repo.try_find_remote(remote_name.as_str()) {
+                Some(Ok(_)) => true,
+                Some(Err(e)) => return Err(RepoError::Other(e.to_string())),
+                None => false,
+            };
+            if !remote_there {
+                add_remote(mut_repo, &remote_name, url, None)
+                    .map_err(|e| RepoError::Other(e.to_string()))?;
+            }
+        }
+
+        let import_options = git_import_options(&settings)?;
+        let mut git_fetch = GitFetch::new(tx.repo_mut(), subprocess_options, &import_options)
+            .map_err(|e| RepoError::Other(e.to_string()))?;
+
+        let ref_expr = GitFetchRefExpression {
+            bookmark: StringExpression::all(),
+            tag: StringExpression::all(),
+        };
+        let expanded = expand_fetch_refspecs(&remote_name, ref_expr)
+            .map_err(|e| RepoError::Other(e.to_string()))?;
+
+        let mut callback = NoopCallback;
+        // `GitFetch::fetch` already runs `git fetch --prune`; the resulting
+        // import (import_refs) then prunes remote bookmarks/tags that vanished
+        // on the remote, so the local view mirrors the remote.
+        git_fetch
+            .fetch(&remote_name, expanded, &mut callback, None)
+            .map_err(|e| RepoError::Other(e.to_string()))?;
+        let stats = git_fetch
+            .import_refs()
+            .await
+            .map_err(|e| RepoError::Other(e.to_string()))?;
+
+        let updated = stats.changed_remote_bookmarks.len();
+        tx.commit("jjlab: pull-mirror")
+            .await
+            .map_err(|e| RepoError::Other(e.to_string()))?;
+        Ok::<usize, RepoError>(updated)
+    })
+}
+
 /// Push all bookmarks/tags to a mirror remote (`git push --mirror`).
 ///
 /// jj is the sole source of truth: local refs are synced and remote refs absent

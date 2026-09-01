@@ -77,8 +77,9 @@ async fn repo_lifecycle_create_write_branch_tag_delete() {
     assert!(!out.sha.is_empty());
     assert_eq!(out.change_id.len(), 32);
 
-    // Content is readable at head.
-    let bytes = jjlab_git::read::raw_at_head(&store, "o", "r", "docs/a.md")
+    // Content is readable at main's tip.
+    let tip = jjlab_git::read::head_sha(&store, "o", "r").await.unwrap();
+    let bytes = jjlab_git::read::read_file_at(&store, "o", "r", &tip, "docs/a.md")
         .await
         .unwrap();
     assert_eq!(bytes, b"# hi\n");
@@ -119,7 +120,10 @@ async fn repo_lifecycle_create_write_branch_tag_delete() {
     jjlab_git::mutation::delete_file(&store, &db, "o", "r", "main", "docs/a.md", "rm", author(), false)
         .await
         .unwrap();
-    assert!(jjlab_git::read::raw_at_head(&store, "o", "r", "docs/a.md").await.is_err());
+    let tip = jjlab_git::read::head_sha(&store, "o", "r").await.unwrap();
+    assert!(jjlab_git::read::read_file_at(&store, "o", "r", &tip, "docs/a.md")
+        .await
+        .is_err());
 
     // 7. Delete repo removes the tree.
     jjlab_git::mutation::delete_repo(&store, "o", "r").await.unwrap();

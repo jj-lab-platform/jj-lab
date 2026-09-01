@@ -75,7 +75,7 @@ pub async fn file_log_handler(
 
 pub async fn search_handler(
     State(state): State<AppState>,
-    Path((org, repo, _rev)): Path<(String, String, String)>,
+    Path((org, repo)): Path<(String, String)>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     let rev = q.get("ref").cloned().unwrap_or_default();

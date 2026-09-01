@@ -434,7 +434,7 @@ pub async fn ops_helm_list(
     }
 }
 
-/// `GET /ops/helm/releases/{name}/status`.
+/// `GET /ops/helm/releases/{name}`.
 pub async fn ops_helm_status(
     Path(name): Path<String>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -445,7 +445,7 @@ pub async fn ops_helm_status(
     }
 }
 
-/// `POST /ops/helm/releases/{name}/uninstall`.
+/// `DELETE /ops/helm/releases/{name}`.
 pub async fn ops_helm_uninstall(
     Path(name): Path<String>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,

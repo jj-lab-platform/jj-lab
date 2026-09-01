@@ -85,7 +85,7 @@ async fn health_is_public() {
 async fn errors_use_gitea_shape() {
     let app = TestApp::new();
     // A snapshot rev that resolves nothing still produces a Gitea-shaped error.
-    let mut resp = app.send("GET", "/api/v1/repos/o/r/git/commits/ffffffffffffffffffffffffffffffffffffffff", None, None).await;
+    let mut resp = app.send("GET", "/api/v1/repos/o/r/commits/ffffffffffffffffffffffffffffffffffffffff", None, None).await;
     let status = TestApp::status(&mut resp).await;
     assert_eq!(status, 404);
     let body = TestApp::body_json(&mut resp).await;
@@ -174,7 +174,7 @@ async fn repo_create_duplicate_conflict_then_write_read_delete_file() {
     assert_eq!(change_id.len(), 32);
 
     // Read it back raw.
-    let mut resp = app.send("GET", "/api/v1/repos/o/r/raw/hello.txt", None, None).await;
+    let mut resp = app.send("GET", "/api/v1/repos/o/r/blob?path=hello.txt", None, None).await;
     assert_eq!(TestApp::status(&mut resp).await, 200);
     let bytes = resp.body_mut().collect().await.unwrap().to_bytes();
     assert_eq!(&bytes[..], b"hi\n");
@@ -211,7 +211,7 @@ async fn repo_create_duplicate_conflict_then_write_read_delete_file() {
         )
         .await;
     assert_eq!(TestApp::status(&mut resp).await, 200);
-    let mut resp = app.send("GET", "/api/v1/repos/o/r/raw/hello.txt", None, None).await;
+    let mut resp = app.send("GET", "/api/v1/repos/o/r/blob?path=hello.txt", None, None).await;
     assert_eq!(TestApp::status(&mut resp).await, 404);
 }
 
@@ -578,7 +578,7 @@ async fn tree_and_branches_and_tags_endpoints() {
 #[tokio::test]
 async fn git_refs_and_compare_endpoints() {
     let app = seeded_app().await;
-    let mut resp = app.send("GET", "/api/v1/repos/o/r/git/refs", None, None).await;
+    let mut resp = app.send("GET", "/api/v1/repos/o/r/refs", None, None).await;
     let body = TestApp::body_json(&mut resp).await;
     assert!(body["refs"].as_array().unwrap().iter().any(|r| r["ref"] == "refs/heads/main"));
 
@@ -669,14 +669,14 @@ async fn commit_info_endpoint_by_sha_and_prefix() {
     let sha = body["commits"][0]["sha"].as_str().unwrap().to_string();
     // Full sha.
     let mut resp = app
-        .send("GET", &format!("/api/v1/repos/o/r/git/commits/{sha}"), None, None)
+        .send("GET", &format!("/api/v1/repos/o/r/commits/{sha}"), None, None)
         .await;
     assert_eq!(TestApp::status(&mut resp).await, 200);
     // Short prefix.
     let mut resp = app
         .send(
             "GET",
-            &format!("/api/v1/repos/o/r/git/commits/{}", &sha[..7]),
+            &format!("/api/v1/repos/o/r/commits/{}", &sha[..7]),
             None,
             None,
         )
@@ -684,7 +684,7 @@ async fn commit_info_endpoint_by_sha_and_prefix() {
     assert_eq!(TestApp::status(&mut resp).await, 200);
     // Unknown sha → 404.
     let mut resp = app
-        .send("GET", "/api/v1/repos/o/r/git/commits/ffffffffffffffffffffffffffffffffffffffff", None, None)
+        .send("GET", "/api/v1/repos/o/r/commits/ffffffffffffffffffffffffffffffffffffffff", None, None)
         .await;
     assert_eq!(TestApp::status(&mut resp).await, 404);
 }
@@ -788,7 +788,7 @@ async fn explore_lists_orgs_and_repos() {
 #[tokio::test]
 async fn graph_endpoint_returns_nodes_with_edges() {
     let app = seeded_app().await;
-    let mut resp = app.send("GET", "/api/v1/graph/o/r", None, None).await;
+    let mut resp = app.send("GET", "/api/v1/repos/o/r/graph", None, None).await;
     assert_eq!(TestApp::status(&mut resp).await, 200);
     let body = TestApp::body_json(&mut resp).await;
     let nodes = body["graph"].as_array().unwrap();
@@ -811,7 +811,7 @@ async fn file_log_endpoint_returns_history_for_path() {
 async fn search_endpoint_finds_needle() {
     let app = seeded_app().await;
     let mut resp = app
-        .send("GET", "/api/v1/repos/o/r/main/search?pattern=line2", None, None)
+        .send("GET", "/api/v1/repos/o/r/search?pattern=line2&ref=main", None, None)
         .await;
     assert_eq!(TestApp::status(&mut resp).await, 200);
     let body = TestApp::body_json(&mut resp).await;

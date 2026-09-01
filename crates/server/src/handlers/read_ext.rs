@@ -77,6 +77,26 @@ pub async fn refs_handler(
     Json(json!({ "refs": items })).into_response()
 }
 
+pub async fn contents_list_handler(
+    State(state): State<AppState>,
+    Path((org, repo)): Path<(String, String)>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let sha = q.get("ref").cloned().unwrap_or_default();
+    let store = state.store.clone();
+    match run_jj(move || {
+        pollster::block_on(jjlab_git::read::contents_dir_at(
+            &store, &org, &repo, &sha, "",
+        ))
+        .map(|entries| Json(json!({ "entries": entries })).into_response())
+    })
+    .await
+    {
+        Ok(resp) => resp,
+        Err(resp) => resp,
+    }
+}
+
 pub async fn contents_handler(
     State(state): State<AppState>,
     Path((org, repo, path)): Path<(String, String, String)>,
@@ -87,8 +107,10 @@ pub async fn contents_handler(
     let is_dir = path.ends_with('/') || path.is_empty();
     match run_jj(move || {
         if is_dir {
-            pollster::block_on(jjlab_git::read::contents_dir(&store, &org, &repo, &sha))
-                .map(|entries| Json(json!({ "entries": entries })).into_response())
+            pollster::block_on(jjlab_git::read::contents_dir_at(
+                &store, &org, &repo, &sha, &path,
+            ))
+            .map(|entries| Json(json!({ "entries": entries })).into_response())
         } else {
             pollster::block_on(jjlab_git::read::contents_entry(&store, &org, &repo, &sha, &path))
                 .map(|v| Json(v).into_response())
@@ -100,7 +122,6 @@ pub async fn contents_handler(
         Err(resp) => resp,
     }
 }
-
 pub async fn compare_handler(
     State(state): State<AppState>,
     Path((org, repo)): Path<(String, String)>,
@@ -150,22 +171,4 @@ pub async fn archive_handler(
         bytes,
     )
         .into_response()
-}
-
-pub async fn contents_root_handler(
-    State(state): State<AppState>,
-    Path((org, repo)): Path<(String, String)>,
-    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    let sha = q.get("ref").cloned().unwrap_or_default();
-    let store = state.store.clone();
-    let entries = match run_jj(move || {
-        pollster::block_on(jjlab_git::read::contents_dir(&store, &org, &repo, &sha))
-    })
-    .await
-    {
-        Ok(e) => e,
-        Err(resp) => return resp,
-    };
-    Json(json!({ "entries": entries })).into_response()
 }

@@ -1,6 +1,7 @@
 use crate::*;
 
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
@@ -83,11 +84,16 @@ pub async fn list_branches(
 
 pub async fn raw_file(
     State(state): State<AppState>,
-    Path((org, repo, path)): Path<(String, String, String)>,
+    Path((org, repo)): Path<(String, String)>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
+    let rev = q.get("ref").cloned().unwrap_or_default();
+    let Some(path) = q.get("path").cloned() else {
+        return json_err(StatusCode::BAD_REQUEST, "path required".into());
+    };
     let store = state.store.clone();
     match run_jj(move || {
-        pollster::block_on(jjlab_git::read::raw_at_head(&store, &org, &repo, &path))
+        pollster::block_on(jjlab_git::read::read_file_at(&store, &org, &repo, &rev, &path))
     })
     .await
     {

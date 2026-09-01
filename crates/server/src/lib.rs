@@ -472,14 +472,14 @@ pub fn build_router(state: AppState) -> axum::Router {
     let mut router = Router::new()
             .route("/api/v1/health", get(health))
             .route("/api/v1/repos", get(list_orgs))
-            .route("/api/v1/graph/{org}/{repo}", get(graph_handler))
+            .route("/api/v1/repos/{org}/{repo}/graph", get(graph_handler))
             .route("/api/v1/repos/{org}/{repo}/file-log", get(file_log_handler))
-            .route("/api/v1/repos/{org}/{repo}/{branch}/search", get(search_handler))
+            .route("/api/v1/repos/{org}/{repo}/search", get(search_handler))
             // Git-aligned read surface (commit-addressed).
-            .route("/api/v1/repos/{org}/{repo}/git/commits/{sha}", get(commit_info))
-            .route("/api/v1/repos/{org}/{repo}/git/commits/{sha}/diff", get(commit_diff))
+            .route("/api/v1/repos/{org}/{repo}/commits/{sha}", get(commit_info))
+            .route("/api/v1/repos/{org}/{repo}/commits/{sha}/diff", get(commit_diff))
             .route("/api/v1/repos/{org}/{repo}/branches", get(list_branches))
-            .route("/api/v1/repos/{org}/{repo}/raw/{*path}", get(raw_file))
+            .route("/api/v1/repos/{org}/{repo}/blob", get(raw_file))
             .route("/api/v1/repos/{org}/{repo}/annotate/{*path}", get(annotate_file))
             .route("/api/v1/repos/{org}/{repo}/tree/{sha}", get(tree_at_sha))
             // jj-native: change list anchored to a snapshot rev (like commits/files).
@@ -487,10 +487,11 @@ pub fn build_router(state: AppState) -> axum::Router {
             // Metadata (jj-native) — conflicts + bookmarks.
             .route("/api/v1/repos/{org}/{repo}/conflicts", get(list_conflicts))
             .route("/api/v1/repos/{org}/{repo}/bookmarks", get(list_bookmarks))
-            // Mirror sync (Gitea-aligned names).
-            .route("/api/v1/repos/{org}/{repo}/sync/clone", post(clone_remote))
-            .route("/api/v1/repos/{org}/{repo}/mirror-sync", post(fetch_remote))
-            .route("/api/v1/repos/{org}/{repo}/push_mirrors", post(push_mirror))
+            // Mirror sync (pair: pull-mirror fetches+prunes, push-mirror pushes
+            // all refs; clone bootstraps a fresh repo from a remote).
+            .route("/api/v1/repos/{org}/{repo}/clone", post(clone_remote))
+            .route("/api/v1/repos/{org}/{repo}/pull-mirror", post(pull_mirror))
+            .route("/api/v1/repos/{org}/{repo}/push-mirror", post(push_mirror))
             // Write surface (D).
             .route("/api/v1/repos/{org}/{repo}", post(create_repo).delete(delete_repo).patch(rename_repo))
             .route(
@@ -512,10 +513,10 @@ pub fn build_router(state: AppState) -> axum::Router {
                 "/api/v1/repos/{org}/{repo}/tags",
                 get(tags_handler),
             )
-            .route("/api/v1/repos/{org}/{repo}/git/refs", get(refs_handler))
+            .route("/api/v1/repos/{org}/{repo}/refs", get(refs_handler))
             .route(
                 "/api/v1/repos/{org}/{repo}/contents",
-                get(contents_root_handler),
+                get(contents_list_handler),
             )
             .route(
                 "/api/v1/repos/{org}/{repo}/contents/{*path}",
@@ -583,7 +584,7 @@ pub fn build_router(state: AppState) -> axum::Router {
             // Orchestration primitives (/ops): purpose-neutral run/service/
             // build/helm/namespace operations consumed by the ops-extension.
             .route("/api/v1/ops/config", get(ops_config))
-            .route("/api/v1/ops/namespaces", get(ops_namespaces).post(register_namespace))
+            .route("/api/v1/ops/namespaces", get(ops_namespaces).put(register_namespace))
             .route("/api/v1/ops/runs", post(ops_run))
             .route("/api/v1/ops/services", get(ops_services_list).post(ops_service_create))
             .route(
@@ -595,8 +596,10 @@ pub fn build_router(state: AppState) -> axum::Router {
             .route("/api/v1/ops/services/{name}/scale", post(ops_service_scale))
             .route("/api/v1/ops/helm/install", post(ops_helm_install))
             .route("/api/v1/ops/helm/releases", get(ops_helm_list))
-            .route("/api/v1/ops/helm/releases/{name}/status", get(ops_helm_status))
-            .route("/api/v1/ops/helm/releases/{name}/uninstall", post(ops_helm_uninstall))
+            .route(
+                "/api/v1/ops/helm/releases/{name}",
+                get(ops_helm_status).delete(ops_helm_uninstall),
+            )
             .route("/api/v1/ops/helm/releases/{name}/rollback", post(ops_helm_rollback))
             .route("/api/v1/ops/builds", post(ops_build))
             .route("/api/v1/ops/packages", get(ops_packages))

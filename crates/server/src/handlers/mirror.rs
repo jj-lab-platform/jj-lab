@@ -56,6 +56,32 @@ pub async fn fetch_remote(
     Json(json!({ "ok": true, "updated_bookmarks": updated })).into_response()
 }
 
+/// `POST /repos/{org}/{repo}/pull-mirror` — fetch + prune from a mirror remote.
+pub async fn pull_mirror(
+    State(state): State<AppState>,
+    Path((org, repo)): Path<(String, String)>,
+    Json(body): Json<SyncBody>,
+) -> Response {
+    let remote = body.remote.clone().unwrap_or_else(|| "origin".to_string());
+    let url = body.url.clone();
+    let store = state.store.clone();
+    let db = state.db.clone();
+    let updated = match run_jj(move || {
+        pollster::block_on(async {
+            let updated =
+                jjlab_git::sync::pull_mirror(&store, &org, &repo, &remote, &url).await?;
+            jjlab_git::project::project_repo(&store, &db, &org, &repo).await?;
+            Ok(updated)
+        })
+    })
+    .await
+    {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "ok": true, "updated_bookmarks": updated })).into_response()
+}
+
 pub async fn push_mirror(
     State(state): State<AppState>,
     Path((org, repo)): Path<(String, String)>,
