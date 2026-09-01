@@ -180,25 +180,35 @@ impl K8s {
         let writer = tokio::spawn(async move {
             use futures_util::AsyncBufReadExt as _;
             use tokio::io::AsyncWriteExt as _;
-            if let Ok(mut buf) = pods.log_stream(&pod_name, &LogParams::default()).await {
-                if let Ok(mut f) = tokio::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_sink)
-                    .await
-                {
-                    let mut line = String::new();
-                    loop {
-                        line.clear();
-                        match buf.read_line(&mut line).await {
-                            Ok(0) | Err(_) => break,
-                            Ok(_) => {
-                                let _ = f.write_all(line.as_bytes()).await;
-                            }
+            // The kube log stream can fail while the container is still being
+            // created (no logs yet); retry until it opens, then follow it.
+            let mut buf = loop {
+                match pods.log_stream(&pod_name, &{
+                let mut lp = LogParams::default();
+                lp.follow = true;
+                lp
+            }).await {
+                    Ok(b) => break b,
+                    Err(_) => tokio::time::sleep(Duration::from_millis(300)).await,
+                }
+            };
+            if let Ok(mut f) = tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_sink)
+                .await
+            {
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match buf.read_line(&mut line).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            let _ = f.write_all(line.as_bytes()).await;
                         }
                     }
-                    let _ = f.flush().await;
                 }
+                let _ = f.flush().await;
             }
         });
 
