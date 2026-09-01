@@ -104,11 +104,11 @@ export async function fetchCommits(
 }
 
 export async function fetchCommit(org: string, repo: string, sha: string): Promise<CommitInfo> {
-  return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/git/commits/${enc(sha)}`)
+  return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/commits/${enc(sha)}`)
 }
 
 export async function fetchCommitDiff(org: string, repo: string, sha: string): Promise<{ diff: string }> {
-  return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/git/commits/${enc(sha)}/diff`)
+  return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/commits/${enc(sha)}/diff`)
 }
 
 export async function fetchChanges(org: string, repo: string, rev: string): Promise<ChangeSummary[]> {
@@ -137,11 +137,20 @@ export async function fetchFile(
   )
 }
 
-export async function fetchRawFile(org: string, repo: string, path: string): Promise<string> {
+export async function fetchRawFile(
+  org: string,
+  repo: string,
+  path: string,
+  rev?: string,
+): Promise<string> {
   const headers = new Headers()
   if (authToken) headers.set('authorization', `token ${authToken}`)
-  const resp = await fetch(`/api/v1/repos/${enc(org)}/${enc(repo)}/raw/${path}`, { headers })
-  if (!resp.ok) throw new ApiError(resp.status, `raw ${resp.status}`)
+  const ref = rev ? `&ref=${enc(rev)}` : ''
+  const resp = await fetch(
+    `/api/v1/repos/${enc(org)}/${enc(repo)}/blob?path=${enc(path)}${ref}`,
+    { headers },
+  )
+  if (!resp.ok) throw new ApiError(resp.status, `blob ${resp.status}`)
   return resp.text()
 }
 
@@ -159,7 +168,7 @@ export async function fetchDiff(
 
 export async function fetchGraph(org: string, repo: string, limit = 100): Promise<GraphNode[]> {
   const data = await request<{ graph: GraphNode[] }>(
-    `/api/v1/graph/${enc(org)}/${enc(repo)}?limit=${limit}`,
+    `/api/v1/repos/${enc(org)}/${enc(repo)}/graph?limit=${limit}`,
   )
   return data.graph ?? []
 }
@@ -183,7 +192,7 @@ export async function searchCode(
   pattern: string,
 ): Promise<SearchHit[]> {
   const data = await request<{ matches: string[] }>(
-    `/api/v1/repos/${enc(org)}/${enc(repo)}/${enc(branch)}/search?pattern=${enc(pattern)}`,
+    `/api/v1/repos/${enc(org)}/${enc(repo)}/search?pattern=${enc(pattern)}&ref=${enc(branch)}`,
   )
   return (data.matches ?? []).map((m) => {
     const i = m.indexOf(':')
