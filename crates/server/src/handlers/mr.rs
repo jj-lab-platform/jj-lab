@@ -48,6 +48,7 @@ pub async fn create_mr_handler(
         Err(resp) => return resp,
     };
     let repo_id = format!("{org}/{repo}");
+    let (org2, r2b, sha2) = (org.clone(), repo.clone(), head_sha.clone());
     let db = state.db.clone();
     let (title, descr, head, base, author) =
         (body.title, body.body, body.head, body.base, server_author().0);
@@ -67,7 +68,11 @@ pub async fn create_mr_handler(
     })
     .await
     {
-        Ok(mr) => (StatusCode::CREATED, Json(mr_json(&mr, "pending".to_string()))).into_response(),
+        Ok(mr) => {
+            // `on: pull_request` — enqueue CI runs at the MR's head snapshot.
+            trigger_pull_request(&state, org2, r2b, sha2).await;
+            (StatusCode::CREATED, Json(mr_json(&mr, "pending".to_string()))).into_response()
+        }
         Err(resp) => resp,
     }
 }
@@ -124,6 +129,56 @@ pub async fn update_mr_handler(
     };
     let rs = db_run(&db, move |db| db.mr_review_state(id)).await.unwrap_or_default();
     Json(mr_json(&updated, rs)).into_response()
+}
+
+pub async fn update_mr_head_handler(
+    State(state): State<AppState>,
+    Path((org, repo, number)): Path<(String, String, i64)>,
+    Json(body): Json<UpdateMrHeadBody>,
+) -> Response {
+    let mr = match load_mr(&state, &org, &repo, number) {
+        Ok(mr) => mr,
+        Err(resp) => return resp,
+    };
+    let store = state.store.clone();
+    let head = body.head.clone();
+    let (o2, r2) = (org.clone(), repo.clone());
+    let (_, head_sha) = match run_jj(move || {
+        pollster::block_on(jjlab_git::read::resolve_rev(&store, &o2, &r2, &head))
+    })
+    .await
+    {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let db = state.db.clone();
+    let id = mr.id;
+    let sha_for_ci = head_sha.clone();
+    let updated =
+        match db_run(&db, move |db| db.update_mr(id, None, Some(&head_sha), Some(&head_sha))).await {
+            Ok(u) => u,
+            Err(resp) => return resp,
+        };
+    trigger_pull_request(&state, org, repo, sha_for_ci).await;
+    let rs = db_run(&db, move |db| db.mr_review_state(id)).await.unwrap_or_default();
+    Json(mr_json(&updated, rs)).into_response()
+}
+
+/// Fire `on: pull_request` workflows at `head_sha` (best-effort; failures
+/// are logged and never fail the MR operation).
+pub(crate) async fn trigger_pull_request(state: &AppState, org: String, repo: String, head_sha: String) {
+    let store = state.store.clone();
+    let db = state.db.clone();
+    let logs_root = std::path::PathBuf::from(
+        std::env::var("JJLAB_LOGS").unwrap_or_else(|_| "/data/logs".to_string()),
+    );
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = pollster::block_on(jjlab_git::actions::on_pull_request(
+            &store, &db, &org, &repo, &head_sha, &logs_root,
+        )) {
+            tracing::warn!(err = %e, "pull_request CI trigger failed");
+        }
+    });
 }
 
 pub async fn add_review(

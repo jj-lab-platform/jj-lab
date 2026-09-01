@@ -160,6 +160,12 @@ pub enum RenameOutcome {
     Conflict,
 }
 
+fn conn_migrate(
+    pool: &r2d2::Pool<SqliteConnectionManager>,
+) -> std::result::Result<r2d2::PooledConnection<SqliteConnectionManager>, Error> {
+    pool.get().map_err(|e| Error::Db(format!("db get: {e}")))
+}
+
 impl Db {
     pub fn open(path: &std::path::Path) -> Result<Self> {
         if let Some(dir) = path.parent() {
@@ -176,6 +182,16 @@ impl Db {
             .max_size(8)
             .build(manager)
             .map_err(|e| Error::Db(format!("db pool: {e}")))?;
+
+        // Lightweight schema drift migration: add the `cron` column to
+        // pre-existing workflows tables (schedule trigger support). No-ops
+        // when the column already exists.
+        {
+            let add_cron = "ALTER TABLE workflows ADD COLUMN cron TEXT";
+            if conn_migrate(&pool).and_then(|c| c.execute_batch(add_cron).map_err(|e| Error::Db(format!("migration: {e}")))).is_ok() {
+                tracing::info!("db migration: workflows.cron added");
+            }
+        }
         {
             let conn = pool
                 .get()
@@ -1097,16 +1113,50 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
         trigger: &str,
         enabled: bool,
     ) -> Result<i64> {
+        self.upsert_workflow_cron(repo_id, name, path, trigger, enabled, None)
+    }
+
+    pub fn upsert_workflow_cron(
+        &self,
+        repo_id: &str,
+        name: &str,
+        path: &str,
+        trigger: &str,
+        enabled: bool,
+        cron: Option<&str>,
+    ) -> Result<i64> {
         let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(
-            "INSERT INTO workflows (repo_id, name, path, trigger, enabled)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO workflows (repo_id, name, path, trigger, enabled, cron)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT (repo_id, path) DO UPDATE SET
-               name = excluded.name, trigger = excluded.trigger, enabled = excluded.enabled",
-            rusqlite::params![repo_id, name, path, trigger, enabled],
+               name = excluded.name, trigger = excluded.trigger,
+               enabled = excluded.enabled, cron = excluded.cron",
+            rusqlite::params![repo_id, name, path, trigger, enabled, cron],
         )
         .map_err(|e| Error::Db(format!("upsert workflow: {e}")))?;
         Ok(conn.last_insert_rowid())
+    }
+
+    /// Workflows with a schedule cron expression, across all repos.
+    pub fn scheduled_workflows(&self) -> Result<Vec<(i64, String, String, String)>> {
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, repo_id, path, cron FROM workflows
+                 WHERE enabled = 1 AND cron IS NOT NULL AND cron != ''",
+            )
+            .map_err(|e| Error::Db(format!("scheduled workflows prepare: {e}")))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+            })
+            .map_err(|e| Error::Db(format!("scheduled workflows query: {e}")))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| Error::Db(format!("scheduled workflows row: {e}")))?);
+        }
+        Ok(out)
     }
 
     pub fn list_workflows(&self, repo_id: &str) -> Result<Vec<WorkflowRow>> {
@@ -1448,6 +1498,7 @@ CREATE TABLE IF NOT EXISTS workflows (
     path TEXT NOT NULL,
     trigger TEXT NOT NULL DEFAULT 'push',
     enabled INTEGER NOT NULL DEFAULT 1,
+    cron TEXT,
     UNIQUE (repo_id, path)
 );
 CREATE TABLE IF NOT EXISTS runs (

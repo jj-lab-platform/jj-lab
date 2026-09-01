@@ -47,12 +47,17 @@ pub struct WorkflowFile {
     pub name: Option<String>,
     #[serde(default)]
     pub on: serde_yaml::Value,
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
     pub jobs: serde_yaml::Mapping,
 }
 
 /// One CI job = one step (k8s-native: single container, one command).
 #[derive(Debug, Deserialize)]
 pub struct JobSpec {
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub steps: Vec<StepSpec>,
 }
@@ -293,7 +298,15 @@ pub async fn on_push(
         if let Ok(wf) = serde_yaml::from_str::<WorkflowFile>(&String::from_utf8_lossy(&raw)) {
             let wf_name = wf.name.clone().unwrap_or_else(|| ".jjlab-ci.yml".to_string());
             let triggers = triggers_of(&wf);
-            let wf_id = db.upsert_workflow(&repo_id, &wf_name, ".jjlab-ci.yml", "push", true)
+            let wf_id = db
+                .upsert_workflow_cron(
+                    &repo_id,
+                    &wf_name,
+                    ".jjlab-ci.yml",
+                    "push",
+                    true,
+                    schedule_cron(&wf).as_deref(),
+                )
                 .map_err(|e| RepoError::Other(e.to_string()))?;
             if triggers.iter().any(|t| t == "push") {
                 enqueued.push(enqueue_run(db, org, repo, wf_id, head_sha, &wf, logs_root)?);
@@ -351,13 +364,33 @@ pub fn enqueue_run(
                 .build
                 .as_ref()
                 .map(|b| serde_json::to_string(b).unwrap_or_default());
+            // B6: merge workflow-level env + job-level env + repo secrets
+            // into the step's shell environment (exports prefix the run).
+            let mut merged_env = wf.env.clone();
+            for (k, v) in &spec.env {
+                merged_env.insert(k.clone(), v.clone());
+            }
+            for (k, v) in repo_secrets() {
+                merged_env.insert(k, v);
+            }
+            let run_cmd: Option<String> = step.run.as_ref().map(|cmd| {
+                if merged_env.is_empty() {
+                    cmd.clone()
+                } else {
+                    let exports: Vec<String> = merged_env
+                        .iter()
+                        .map(|(k, v)| format!("export {}={};", shell_safe(k), shell_safe(v)))
+                        .collect();
+                    format!("{} {}", exports.join(" "), cmd)
+                }
+            });
             let _ = db
                 .create_job_detail(
                     run_id,
                     &label,
                     &log_path.to_string_lossy(),
                     step.image.as_deref(),
-                    step.run.as_deref(),
+                    run_cmd.as_deref(),
                     timeout_seconds,
                     build_spec.as_deref(),
                 )
@@ -478,5 +511,198 @@ mod tests {
     #[test]
     fn sanitize_replaces_slashes() {
         assert_eq!(sanitize("build/test 1"), "build_test_1");
+    }
+}
+
+/// `on: pull_request` — scan workflows at `head_sha` and enqueue runs for
+/// those declaring a `pull_request` trigger (best-effort per file).
+pub async fn on_pull_request(
+    store: &Arc<RepoStore>,
+    db: &Db,
+    org: &str,
+    repo: &str,
+    head_sha: &str,
+    logs_root: &Path,
+) -> Result<Vec<i64>, RepoError> {
+    let repo_id = format!("{org}/{repo}");
+    let mut enqueued = Vec::new();
+    if let Ok(raw) = read::read_file_at(store, org, repo, head_sha, ".jjlab-ci.yml").await {
+        if let Ok(wf) = serde_yaml::from_str::<WorkflowFile>(&String::from_utf8_lossy(&raw)) {
+            let wf_name = wf.name.clone().unwrap_or_else(|| ".jjlab-ci.yml".to_string());
+            let triggers = triggers_of(&wf);
+            let wf_id = db
+                .upsert_workflow(&repo_id, &wf_name, ".jjlab-ci.yml", "pull_request", true)
+                .map_err(|e| RepoError::Other(e.to_string()))?;
+            if triggers.iter().any(|t| t == "pull_request") {
+                enqueued.push(enqueue_run(db, org, repo, wf_id, head_sha, &wf, logs_root)?);
+            }
+        }
+    }
+    Ok(enqueued)
+}
+
+/// Dispatch a scheduled workflow run at `head` (dedup: one run per workflow
+/// per minute — enforced by the caller's minute key in the run's trigger_ref
+/// annotation; here we simply enqueue).
+pub async fn dispatch_scheduled(
+    store: Arc<RepoStore>,
+    db: Arc<jjlab_core::Db>,
+    org: String,
+    repo: String,
+    workflow_id: i64,
+    head: String,
+    logs_root: std::path::PathBuf,
+    _minute_key: &str,
+) -> Result<bool, RepoError> {
+    // jj types are !Send; run the whole read on the blocking pool (the
+    // pollster pattern used by the HTTP handlers) so this future stays Send.
+    tokio::task::spawn_blocking(move || {
+        pollster::block_on(async {
+            let Some(wf_row) = db
+                .get_workflow(workflow_id)
+                .map_err(|e| RepoError::Other(e.to_string()))?
+            else {
+                return Err(RepoError::Other(format!("workflow {workflow_id} not found")));
+            };
+            let raw = read::read_file_at(&store, &org, &repo, &head, &wf_row.path)
+                .await
+                .map_err(|e| {
+                    RepoError::Other(format!("workflow file {}/{} unread: {}", org, repo, e))
+                })?;
+            let wf = serde_yaml::from_str::<WorkflowFile>(&String::from_utf8_lossy(&raw))
+                .map_err(|e| RepoError::Other(format!("parse workflow: {e}")))?;
+            enqueue_run(&db, &org, &repo, workflow_id, &head, &wf, &logs_root)?;
+            Ok(true)
+        })
+    })
+    .await
+    .map_err(|e| RepoError::Other(format!("schedule task join: {e}")))?
+}
+
+/// Extract the first `on: {schedule: [{cron: "…"}]}` expression, if any.
+fn schedule_cron(wf: &WorkflowFile) -> Option<String> {
+    let serde_yaml::Value::Mapping(m) = &wf.on else {
+        return None;
+    };
+    let sched = m.get(serde_yaml::Value::String("schedule".into()))?;
+    let seq = sched.as_sequence()?;
+    for item in seq {
+        if let Some(cron) = item.get(serde_yaml::Value::String("cron".into())) {
+            if let Some(s) = cron.as_str() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod schedule_tests {
+    use super::*;
+    use crate::scheduler::cron_matches;
+
+    fn wf(yaml: &str) -> WorkflowFile {
+        serde_yaml::from_str(yaml).expect("parse workflow")
+    }
+
+    #[test]
+    fn schedule_cron_extracted_from_mapping_trigger() {
+        let w = wf(
+            "name: Nightly\non:\n  schedule:\n    - cron: \"17 3 * * *\"\njobs:\n  a:\n    steps:\n      - run: echo hi\n",
+        );
+        assert_eq!(schedule_cron(&w).as_deref(), Some("17 3 * * *"));
+    }
+
+    #[test]
+    fn schedule_cron_none_for_push() {
+        let w = wf("name: CI\non: push\njobs:\n  a:\n    steps:\n      - run: echo hi\n");
+        assert_eq!(schedule_cron(&w), None);
+    }
+
+    #[test]
+    fn cron_matcher_handles_star_and_steps() {
+        let t = jiff::Zoned::now()
+            .with()
+            .year(2026)
+            .month(9)
+            .day(1)
+            .hour(3)
+            .minute(17)
+            .second(0)
+            .build()
+            .unwrap();
+        assert!(cron_matches("* * * * *", t.clone()));
+        assert!(cron_matches("17 3 * * *", t.clone()));
+        assert!(!cron_matches("18 3 * * *", t.clone()));
+        assert!(cron_matches("*/15 * * * *", t.with().minute(30).build().unwrap()));
+        assert!(!cron_matches("*/15 * * * *", t.with().minute(17).build().unwrap()));
+    }
+}
+
+/// Repo-level secrets injected into every CI job (B6): parsed from the
+/// JJLAB_CI_SECRETS env var as `KEY=value` comma entries, or a JSON object
+/// file path in JJLAB_CI_SECRETS_FILE. Missing config = no secrets.
+fn repo_secrets() -> Vec<(String, String)> {
+    if let Ok(file) = std::env::var("JJLAB_CI_SECRETS_FILE") {
+        if let Ok(raw) = std::fs::read_to_string(&file) {
+            if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&raw) {
+                return map
+                    .into_iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
+                    .collect();
+            }
+        }
+    }
+    if let Ok(raw) = std::env::var("JJLAB_CI_SECRETS") {
+        return raw
+            .split(',')
+            .filter_map(|pair| pair.split_once('='))
+            .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+            .collect();
+    }
+    Vec::new()
+}
+
+/// Quote a value so it survives a double-quoted shell embedding safely.
+fn shell_safe(s: &str) -> String {
+    if s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.,/:=".contains(c)) && !s.is_empty() {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+
+    fn wf(yaml: &str) -> WorkflowFile {
+        serde_yaml::from_str(yaml).expect("parse workflow")
+    }
+
+    #[test]
+    fn shell_safe_quotes_spaces_and_quotes() {
+        assert_eq!(shell_safe("plain-value"), "plain-value");
+        assert_eq!(shell_safe("has space"), "'has space'");
+        let quoted = shell_safe("o\u{27}brien");
+        // Must round-trip through a real shell evaluation.
+        let script = format!("V={}; printf %s \"$V\"", quoted);
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .output()
+            .expect("spawn sh");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "o\u{27}brien");
+    }
+
+    #[test]
+    fn workflow_and_job_env_parsed() {
+        let w = wf(
+            "name: E\non: push\nenv:\n  GLOBAL: g\njobs:\n  a:\n    env:\n      LOCAL: l\n    steps:\n      - run: echo hi\n",
+        );
+        assert_eq!(w.env.get("GLOBAL").map(String::as_str), Some("g"));
+        let job = w.jobs.get(serde_yaml::Value::String("a".into())).unwrap();
+        let spec: JobSpec = serde_yaml::from_value(job.clone()).unwrap();
+        assert_eq!(spec.env.get("LOCAL").map(String::as_str), Some("l"));
     }
 }

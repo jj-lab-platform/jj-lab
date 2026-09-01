@@ -120,3 +120,59 @@ pub async fn job_logs(
     let bytes = jjlab_git::actions::job_log(job.log_path.as_deref().unwrap_or_default());
     (StatusCode::OK, [("content-type", "text/plain")], bytes).into_response()
 }
+
+/// `GET .../actions/jobs/{job_id}/logs/stream` — SSE tail of the job's log
+/// file: replays existing content, then keeps streaming appended lines until
+/// the job leaves `running` and the file goes quiet (B4).
+pub async fn job_logs_stream(
+    State(state): State<AppState>,
+    Path((org, repo, job_id)): Path<(String, String, i64)>,
+) -> Response {
+    use axum::response::sse::{Event, KeepAlive};
+    use axum::response::{Sse, IntoResponse as _};
+
+    let db = state.db.clone();
+    let job = match db.run(move |db| db.get_job(job_id)).await {
+        Ok(Some(j)) => j,
+        Ok(None) => return json_err(StatusCode::NOT_FOUND, format!("job {job_id} not found")),
+        Err(e) => return json_err(error_status(&e), e.to_string()),
+    };
+    let repo_id = format!("{org}/{repo}");
+    let run_repo = db.run(move |db| db.get_run(job.run_id)).await;
+    match run_repo {
+        Ok(Some(run)) if run.repo_id == repo_id => {}
+        _ => return json_err(StatusCode::NOT_FOUND, "job not in this repo".into()),
+    }
+    let path = job.log_path.clone().unwrap_or_default();
+    let mut sent = 0usize; // bytes already streamed
+
+    let stream = async_stream::stream! {
+        let mut quiet = 0usize;
+        loop {
+            match tokio::fs::read(&path).await {
+                Ok(bytes) if bytes.len() > sent => {
+                    let chunk = String::from_utf8_lossy(&bytes[sent..]).to_string();
+                    sent = bytes.len();
+                    for line in chunk.lines() {
+                        yield Ok::<_, std::convert::Infallible>(
+                            Event::default().event("log").data(line.to_string()),
+                        );
+                    }
+                    quiet = 0;
+                }
+                _ => {
+                    quiet += 1;
+                }
+            }
+            let done = job.status != "running";
+            if done && quiet >= 2 {
+                yield Ok::<_, std::convert::Infallible>(
+                    Event::default().event("state").data(job.status.clone()),
+                );
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    };
+    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+}

@@ -106,7 +106,20 @@ impl K8s {
         run_id: i64,
         timeout: Duration,
     ) -> Result<(String, Option<i32>, String), RepoError> {
-        let pod = sandbox_pod(name, image, run, run_id);
+        self.run_sandbox_with(name, image, run, run_id, timeout, &[]).await
+    }
+
+    /// `run_sandbox` with extra pod env vars (workflow `env`/secrets).
+    pub async fn run_sandbox_with(
+        &self,
+        name: &str,
+        image: &str,
+        run: &str,
+        run_id: i64,
+        timeout: Duration,
+        env: &[(String, String)],
+    ) -> Result<(String, Option<i32>, String), RepoError> {
+        let pod = sandbox_pod_full(name, image, run, run_id, env, None);
         self.pods()
             .create(&PostParams::default(), &pod)
             .await
@@ -119,6 +132,82 @@ impl K8s {
         let logs = self.pod_logs(name).await.unwrap_or_default();
         let _ = self.delete_pod(name).await;
         Ok((phase, exit_code, logs))
+    }
+
+    /// Cheap handle clone for spawning per-job tasks.
+    pub fn clone_inner(&self) -> K8s {
+        K8s { client: self.client.clone(), default_ns: self.default_ns.clone() }
+    }
+
+    /// Create a fully-formed pod, wait for terminal phase, collect logs, delete.
+    pub async fn run_pod(
+        &self,
+        pod: Pod,
+        name: &str,
+        timeout: Duration,
+    ) -> Result<(String, Option<i32>, String), RepoError> {
+        self.pods()
+            .create(&PostParams::default(), &pod)
+            .await
+            .map_err(|e| RepoError::Other(format!("create sandbox pod: {e}")))?;
+        let _ = self.wait_terminal(name, timeout).await;
+        let phase = self.pod_phase(name).await?;
+        let exit_code = self.pod_exit_code(name).await?;
+        let logs = self.pod_logs(name).await.unwrap_or_default();
+        let _ = self.delete_pod(name).await;
+        Ok((phase, exit_code, logs))
+    }
+
+    /// Create a pod and stream its logs into `log_sink` (typically a file on
+    /// /data) while it runs — the CI job-logs endpoint can then tail live
+    /// output instead of waiting for the pod to finish (B4).
+    pub async fn run_pod_streaming(
+        &self,
+        pod: Pod,
+        log_sink: std::path::PathBuf,
+        timeout: Duration,
+    ) -> Result<(String, Option<i32>), RepoError> {
+        let name = pod.metadata.name.clone().unwrap_or_default();
+        self.pods()
+            .create(&PostParams::default(), &pod)
+            .await
+            .map_err(|e| RepoError::Other(format!("create sandbox pod: {e}")))?;
+
+        // Log writer task: reads the stream incrementally, appending to the
+        // sink file. Ends when the pod's stream closes (termination).
+        let pods = self.pods();
+        let pod_name = name.clone();
+        let writer = tokio::spawn(async move {
+            use futures_util::AsyncBufReadExt as _;
+            use tokio::io::AsyncWriteExt as _;
+            if let Ok(mut buf) = pods.log_stream(&pod_name, &LogParams::default()).await {
+                if let Ok(mut f) = tokio::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_sink)
+                    .await
+                {
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        match buf.read_line(&mut line).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) => {
+                                let _ = f.write_all(line.as_bytes()).await;
+                            }
+                        }
+                    }
+                    let _ = f.flush().await;
+                }
+            }
+        });
+
+        let _ = self.wait_terminal(&name, timeout).await;
+        let _ = writer.await;
+        let phase = self.pod_phase(&name).await?;
+        let exit_code = self.pod_exit_code(&name).await?;
+        let _ = self.delete_pod(&name).await;
+        Ok((phase, exit_code))
     }
 
     /// Stream the pod's container logs (one container per sandbox pod).
@@ -267,8 +356,29 @@ pub async fn read_pod_logs(pods: &Api<Pod>, name: &str) -> RepoResult<String> {
 
 /// Serialize a sandbox Pod spec from JSON — keeps the pod shape auditable
 /// without hand-building ~20 nested k8s-openapi structs.
+///
+/// When `snapshot_url` is set, an initContainer fetches the repo tarball from
+/// jjlab's archive endpoint and unpacks it into the shared `workspace`
+/// emptyDir, so the job's `run` executes against real repo content at
+/// `/workspace` (empty when no snapshot was requested — e.g. synthetic repos).
 pub fn sandbox_pod(name: &str, image: &str, run: &str, run_id: i64) -> Pod {
-    let spec = serde_json::json!({
+    sandbox_pod_full(name, image, run, run_id, &[], None)
+}
+
+/// Full-shape sandbox pod: extra env vars + an optional repo snapshot URL.
+pub fn sandbox_pod_full(
+    name: &str,
+    image: &str,
+    run: &str,
+    run_id: i64,
+    env: &[(String, String)],
+    snapshot_url: Option<&str>,
+) -> Pod {
+    let env_json: Vec<serde_json::Value> = env
+        .iter()
+        .map(|(k, v)| serde_json::json!({ "name": k, "value": v }))
+        .collect();
+    let base = serde_json::json!({
         "apiVersion": "v1",
         "kind": "Pod",
         "metadata": {
@@ -285,6 +395,7 @@ pub fn sandbox_pod(name: &str, image: &str, run: &str, run_id: i64) -> Pod {
                 "image": image,
                 "command": ["sh", "-c", run],
                 "workingDir": "/workspace",
+                "env": env_json,
                 "resources": {
                     "requests": { "cpu": "250m", "memory": "256Mi" },
                     "limits": { "cpu": "1", "memory": "1Gi" },
@@ -296,7 +407,68 @@ pub fn sandbox_pod(name: &str, image: &str, run: &str, run_id: i64) -> Pod {
             }],
         },
     });
+
+    let spec = match snapshot_url {
+        Some(url) => {
+            let mut spec = base;
+            // The busybox image must come from the in-cluster registry too —
+            // derived from the job image's registry host when possible, else
+            // the known artifact default.
+            let init_image = std::env::var("JJLAB_CI_INIT_IMAGE").unwrap_or_else(|_| {
+                default_init_image_for(image)
+            });
+            spec["spec"]["initContainers"] = serde_json::json!([{
+                "name": "repo-snapshot",
+                "image": init_image,
+                "command": ["sh", "-ec", format!(
+                    "wget -qO- --header=\"Authorization: token $JJLAB_TOKEN\" '{url}' | tar -xzf - -C /workspace"
+                )],
+                "env": [{ "name": "JJLAB_TOKEN", "valueFrom": { "secretKeyRef": { "name": "jjlab-ci-token", "key": "token", "optional": true } } }],
+                "resources": {
+                    "requests": { "cpu": "50m", "memory": "64Mi" },
+                    "limits": { "cpu": "500m", "memory": "512Mi" },
+                },
+            }]);
+            spec["spec"]["volumes"] = serde_json::json!([{ "name": "workspace", "emptyDir": {} }]);
+            spec["spec"]["initContainers"][0]["volumeMounts"] =
+                serde_json::json!([{ "name": "workspace", "mountPath": "/workspace" }]);
+            spec["spec"]["containers"][0]["volumeMounts"] =
+                serde_json::json!([{ "name": "workspace", "mountPath": "/workspace" }]);
+            spec
+        }
+        None => base,
+    };
     serde_json::from_value(spec).expect("sandbox pod spec is well-formed")
+}
+
+/// Derive the registry host from the job image (same host, busybox:1.36) so
+/// the init container resolves without public-internet access. Falls back to
+/// the artifact registry when the image has no recognizable host.
+fn default_init_image_for(job_image: &str) -> String {
+    let artifact_default = "artifact.zergx.svc.cluster.local/library/busybox:1.36";
+    // A host is the part before the first '/' when it contains '.' or ':'.
+    match job_image.split_once('/') {
+        Some((host, _)) if host.contains('.') || host.contains(':') => {
+            format!("{host}/library/busybox:1.36")
+        }
+        _ => artifact_default.to_string(),
+    }
+}
+
+/// Run a CI job pod to completion: `run_sandbox_with` plus an optional repo
+/// snapshot URL (init container fetches the tarball into /workspace).
+pub async fn run_pod_full(
+    k8s: &K8s,
+    name: &str,
+    image: &str,
+    run: &str,
+    run_id: i64,
+    timeout: Duration,
+    env: &[(String, String)],
+    snapshot_url: Option<&str>,
+) -> Result<(String, Option<i32>, String), RepoError> {
+    let pod = sandbox_pod_full(name, image, run, run_id, env, snapshot_url);
+    k8s.run_pod(pod, name, timeout).await
 }
 
 /// A generic one-shot run pod (the `/ops/runs` primitive): a command argv
@@ -445,4 +617,54 @@ pub async fn run_helm(args: &[&str], timeout: Duration) -> Result<CliOutput, Rep
 /// Invoke buildctl with argv (used by future image-build CI steps).
 pub async fn run_buildctl(args: &[&str], timeout: Duration) -> Result<CliOutput, RepoError> {
     run_cli("buildctl", args, timeout).await
+}
+#[cfg(test)]
+mod sandbox_pod_tests {
+    use super::*;
+
+    #[test]
+    fn plain_pod_has_no_init_container() {
+        let p = sandbox_pod("t1", "img:1", "echo hi", 7);
+        let spec = p.spec.unwrap();
+        assert!(spec.init_containers.is_none());
+        assert!(spec.volumes.is_none());
+        let c = spec.containers.first().unwrap();
+        assert!(c.env.is_none() || c.env.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn snapshot_pod_has_init_and_shared_volume() {
+        let p = sandbox_pod_full(
+            "t2",
+            "artifact.example.invalid/rust:1",
+            "cat /workspace/README",
+            9,
+            &[("FOO".into(), "bar".into())],
+            Some("http://self/api/v1/repos/o/r/archive/tarball/main"),
+        );
+        let spec = p.spec.unwrap();
+        let init = spec.init_containers.expect("init container present");
+        assert_eq!(init.len(), 1);
+        assert!(serde_json::to_string(&init[0]).unwrap().contains("tarball/main"));
+        // both mounts target /workspace and share the "workspace" volume
+        assert!(serde_json::to_string(&spec.volumes).unwrap().contains("workspace"));
+        assert!(serde_json::to_string(&init[0].volume_mounts).unwrap().contains("/workspace"));
+        let c = spec.containers.first().unwrap();
+        assert_eq!(c.env.as_ref().unwrap()[0].name, "FOO");
+    }
+
+    #[test]
+    fn init_image_follows_job_registry_host() {
+        let p = sandbox_pod_full(
+            "t3",
+            "artifact.other.invalid:5000/rust:1",
+            "true",
+            3,
+            &[],
+            Some("http://self/x"),
+        );
+        let init = p.spec.unwrap().init_containers.unwrap();
+        let s = serde_json::to_string(&init[0]).unwrap();
+        assert!(s.contains("artifact.other.invalid:5000/library/busybox"), "{s}");
+    }
 }

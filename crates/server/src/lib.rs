@@ -165,6 +165,12 @@ pub struct UpdateMrBody {
 }
 
 #[derive(Deserialize)]
+pub struct UpdateMrHeadBody {
+    /// the MR's new head rev (force-push re-association + CI re-trigger)
+    head: String,
+}
+
+#[derive(Deserialize)]
 pub struct ReviewBody {
     /// approved | request_changes | comment
     state: String,
@@ -490,6 +496,7 @@ pub(crate) fn server_author() -> (String, String) {
 
 pub fn build_router(state: AppState) -> axum::Router {
     use crate::handlers::*;
+use axum::routing::put as put_route;
     let mut router = Router::new()
             .route("/api/v1/health", get(health))
             .route("/api/v1/repos", get(list_orgs))
@@ -558,6 +565,10 @@ pub fn build_router(state: AppState) -> axum::Router {
                 get(get_mr_handler).patch(update_mr_handler),
             )
             .route(
+                "/api/v1/repos/{org}/{repo}/pulls/{number}/head",
+                put_route(update_mr_head_handler),
+            )
+            .route(
                 "/api/v1/repos/{org}/{repo}/pulls/{number}/reviews",
                 get(list_reviews).post(add_review),
             )
@@ -601,6 +612,10 @@ pub fn build_router(state: AppState) -> axum::Router {
             .route(
                 "/api/v1/repos/{org}/{repo}/actions/jobs/{job_id}/logs",
                 get(job_logs),
+            )
+            .route(
+                "/api/v1/repos/{org}/{repo}/actions/jobs/{job_id}/logs/stream",
+                get(job_logs_stream),
             )
             // Orchestration primitives (/ops): purpose-neutral run/service/
             // build/helm/namespace operations consumed by the ops-extension.
