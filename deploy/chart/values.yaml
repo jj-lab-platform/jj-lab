@@ -18,6 +18,10 @@ replicaCount: 1
 serviceAccount:
   name: jjlab
 
+# --- image pull secret for the forgejo OCI registry (private, requires auth) ---
+imagePullSecrets:
+  - name: forgejo-pull
+
 # --- HTTP server ---
 service:
   type: ClusterIP
