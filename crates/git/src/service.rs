@@ -143,6 +143,15 @@ fn tcp_probe(container_port: i32) -> Probe {
 fn container(spec: &ServiceRequest) -> Container {
     let cps = ports(&spec.ports);
     let probe_port = cps.first().map(|p| p.container_port).unwrap_or(8080);
+    // ResourceQuota-safe: pods in quota'd namespaces must carry explicit
+    // requests+limits (defaults mirror the old ops-extension values).
+    let (cpu, memory) = match &spec.resources {
+        Some(r) if !r.cpu.is_empty() || !r.memory.is_empty() => (
+            if r.cpu.is_empty() { "250m".to_string() } else { r.cpu.clone() },
+            if r.memory.is_empty() { "256Mi".to_string() } else { r.memory.clone() },
+        ),
+        _ => ("250m".to_string(), "256Mi".to_string()),
+    };
     Container {
         name: spec.name.clone(),
         image: Some(spec.image.clone()),
@@ -150,6 +159,17 @@ fn container(spec: &ServiceRequest) -> Container {
         env: Some(env_vars(&spec.env)),
         ports: Some(cps),
         readiness_probe: Some(tcp_probe(probe_port)),
+        resources: Some(k8s_openapi::api::core::v1::ResourceRequirements {
+            requests: Some(BTreeMap::from([
+                ("cpu".to_string(), k8s_openapi::apimachinery::pkg::api::resource::Quantity(cpu.clone())),
+                ("memory".to_string(), k8s_openapi::apimachinery::pkg::api::resource::Quantity(memory.clone())),
+            ])),
+            limits: Some(BTreeMap::from([
+                ("cpu".to_string(), k8s_openapi::apimachinery::pkg::api::resource::Quantity(cpu.clone())),
+                ("memory".to_string(), k8s_openapi::apimachinery::pkg::api::resource::Quantity(memory.clone())),
+            ])),
+            claims: None,
+        }),
         ..Default::default()
     }
 }
