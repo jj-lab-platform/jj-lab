@@ -16,6 +16,15 @@ pub struct PackageSummary {
     pub repository: String,
     pub versions: Vec<String>,
     pub source: String,
+    /// Owning source repo (org/repo), empty for pull-through caches.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub repo: String,
+    /// Workspace ref (bookmark) the artifact was published from.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ref_: String,
+    /// Commit sha provenance.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sha: String,
 }
 
 /// Protocol-neutral artifact metadata storage.

@@ -593,6 +593,7 @@ async fn get_manifest(
                         digest: dgst.clone(),
                         blobs: extract_blobs(&body),
                         source: "pull".into(),
+                        ..Default::default()
                     };
                     let _ = adapter.state.meta.put(art).await;
                     let digest_art = Artifact {
@@ -604,6 +605,7 @@ async fn get_manifest(
                         digest: dgst.clone(),
                         blobs: extract_blobs(&body),
                         source: "pull".into(),
+                        ..Default::default()
                     };
                     let _ = adapter.state.meta.put(digest_art).await;
                     manifest_ok(body, &media_type, &dgst, write_body)
@@ -739,6 +741,7 @@ async fn put_manifest(
         blobs: blobs.clone(),
         digest: effective_digest.clone(),
         source: "push".into(),
+        ..Default::default()
     };
     if let Err(e) = adapter.state.meta.put(art).await {
         return OciAdapter::error(StatusCode::INTERNAL_SERVER_ERROR, "UNKNOWN", &e.to_string());
@@ -753,6 +756,7 @@ async fn put_manifest(
             blobs: blobs.clone(),
             digest: effective_digest.clone(),
             source: "push".into(),
+            ..Default::default()
         };
         if let Err(e) = adapter.state.meta.put(digest_art).await {
             return OciAdapter::error(StatusCode::INTERNAL_SERVER_ERROR, "UNKNOWN", &e.to_string());
@@ -776,6 +780,7 @@ async fn put_manifest(
                             blobs: blobs.clone(),
                             digest: effective_digest.clone(),
                             source: "push".into(),
+                            ..Default::default()
                         };
                         if let Err(e) = adapter.state.meta.put(tag_art).await {
                             return OciAdapter::error(

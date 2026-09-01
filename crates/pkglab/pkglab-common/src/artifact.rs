@@ -122,6 +122,18 @@ pub struct Artifact {
     /// (cached via pull-through). Empty means `push`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source: String,
+    /// Owning source repo (org/repo) when the artifact was published from a
+    /// jjlab workspace — e.g. `build/zergx-agent`. Empty for pull-through
+    /// caches and protocol-level extras. Enables repo-scoped package queries
+    /// (GitHub-style "linked to repository").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub repo: String,
+    /// The workspace ref (bookmark) the artifact was published from.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ref_: String,
+    /// The commit sha the artifact was published from (content provenance).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sha: String,
 }
 
 impl Artifact {

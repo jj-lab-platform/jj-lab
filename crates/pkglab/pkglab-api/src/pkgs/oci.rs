@@ -100,7 +100,9 @@ impl ProtocolHandler for OciHandler {
                 source: "push".into(),
             };
             api.put(art).await
-        }
+        ,
+        ..Default::default()
+    }
 
         // Tag reference.
         if !reference_is_digest(reference) {

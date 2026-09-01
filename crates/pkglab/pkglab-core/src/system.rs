@@ -174,14 +174,33 @@ async fn reset_proxy(
     Ok(Json(serde_json::json!({"key": key, "reset": true})))
 }
 
-async fn list_packages(State(st): State<Arc<SystemState>>) -> impl IntoResponse {
-    match st.registry.meta.list_packages().await {
-        Ok(pkgs) => Json(serde_json::json!({ "packages": pkgs })).into_response(),
+#[derive(serde::Deserialize)]
+struct PackageQuery {
+    #[serde(default)]
+    repo: Option<String>,
+}
+
+async fn list_packages(
+    State(st): State<Arc<SystemState>>,
+    Query(q): Query<PackageQuery>,
+) -> impl IntoResponse {
+    let pkgs = match st.registry.meta.list_packages().await {
+        Ok(p) => p,
         Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()})))
-                .into_response()
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
         }
-    }
+    };
+    // GitHub-style repo scoping: ?repo=org/repo filters to artifacts published
+    // from that source repo (Artifact.repo). Empty = all.
+    let filtered: Vec<_> = match &q.repo {
+        Some(r) if !r.is_empty() => pkgs.into_iter().filter(|p| p.repo == *r).collect(),
+        _ => pkgs,
+    };
+    Json(serde_json::json!({ "packages": filtered })).into_response()
 }
 
 #[derive(serde::Deserialize)]

@@ -221,6 +221,9 @@ impl pkglab_common::ArtifactStore for SqliteArtifactStore {
         struct Acc {
             versions: std::collections::BTreeSet<String>,
             source: String,
+            repo: String,
+            ref_: String,
+            sha: String,
         }
         let mut by_repo: BTreeMap<(String, String), Acc> = BTreeMap::new();
         for row in rows {
@@ -236,7 +239,13 @@ impl pkglab_common::ArtifactStore for SqliteArtifactStore {
             let format = if format.is_empty() { "oci".to_string() } else { format };
             let entry = by_repo
                 .entry((format, repo))
-                .or_insert_with(|| Acc { versions: Default::default(), source: a.source.clone() });
+                .or_insert_with(|| Acc {
+                    versions: Default::default(),
+                    source: a.source.clone(),
+                    repo: a.repo.clone(),
+                    ref_: a.ref_.clone(),
+                    sha: a.sha.clone(),
+                });
             entry.versions.insert(ver);
             if a.source == "pull" {
                 entry.source = "pull".into();
@@ -254,6 +263,9 @@ impl pkglab_common::ArtifactStore for SqliteArtifactStore {
                     repository: repo,
                     versions: acc.versions.into_iter().collect(),
                     source,
+                    repo: acc.repo.clone(),
+                    ref_: acc.ref_.clone(),
+                    sha: acc.sha.clone(),
                 }
             })
             .collect();
