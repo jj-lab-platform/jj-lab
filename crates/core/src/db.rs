@@ -1143,8 +1143,11 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
         let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let n: i64 = conn
             .query_row(
+                // ANY run of the workflow within the window (status-agnostic:
+                // a fast job flips queued→success within seconds, and a
+                // successful run still counts as "already ran this minute").
                 "SELECT COUNT(*) FROM runs
-                 WHERE workflow_id = ?1 AND status IN ('queued','running')
+                 WHERE workflow_id = ?1
                    AND created_at >= datetime('now', '-' || ?2 || ' seconds')",
                 rusqlite::params![workflow_id, secs],
                 |r| r.get(0),
