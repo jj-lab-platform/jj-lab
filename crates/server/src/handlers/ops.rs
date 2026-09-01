@@ -374,7 +374,44 @@ pub async fn ops_build(
         )
         .await
         {
-            Ok(result) => task.finish(true, Some(result), None),
+            Ok(result) => {
+                // Source-repo provenance: when a repo build succeeds, register
+                // the produced image as an oci Artifact carrying its owning
+                // repo/ref/sha so /pkgs/system/packages?repo=<org/repo> can
+                // enumerate the versions a repo published (GitHub-style
+                // "linked to repository"). Regression-free: absent meta store
+                // or a non-oci export simply skips the record.
+                if !org.is_empty() && !repo.is_empty() && export == "push" {
+                    if let Some(img) = image.as_deref() {
+                        let meta = state.registry.as_ref().map(|r| r.meta.clone());
+                        if let Some(meta) = meta {
+                            let (org2, repo2, ref2) = (org.clone(), repo.clone(), bookmark.clone());
+                            let mut art = pkglab_common::artifact::Artifact {
+                                format: "oci".into(),
+                                repository: img.to_string(),
+                                version: result.clone(),
+                                source: "push".into(),
+                                repo: format!("{org2}/{repo2}"),
+                                ref_: ref2.clone(),
+                                ..Default::default()
+                            };
+                            // Best-effort prove the head sha for this repo.
+                            let sha = run_jj(move || {
+                                pollster::block_on(jjlab_git::read::head_sha(
+                                    &state.store, &org2, &repo2,
+                                ))
+                            })
+                            .await
+                            .ok();
+                            if let Some(s) = sha {
+                                art.sha = s;
+                            }
+                            let _ = meta.put(art).await;
+                        }
+                    }
+                }
+                task.finish(true, Some(result), None)
+            }
             Err(e) => task.finish(false, None, Some(e.to_string())),
         }
     });

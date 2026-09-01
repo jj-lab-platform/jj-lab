@@ -15,10 +15,14 @@ ENV HTTP_PROXY=${HTTP_PROXY} \
     NO_PROXY=${NO_PROXY}
 RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories \
     && apk add --no-cache ca-certificates git
+COPY nipio-ca.crt /opt/jjlab/nipio-ca.crt
 COPY build/jjlab /opt/jjlab/jjlab
 COPY build/buildctl /usr/local/bin/buildctl
 COPY build/kubectl /usr/local/bin/kubectl
 COPY build/helm /usr/local/bin/helm
+# Trust the in-cluster nipio CA so buildctl can reach forgejo OCI over TLS.
+COPY nipio-ca.crt /usr/local/share/ca-certificates/nipio.crt
+RUN update-ca-certificates
 ENV JJLAB_PORT=8080 \
     JJLAB_DB=/data/data.db \
     JJLAB_REPOS=/data/repos \

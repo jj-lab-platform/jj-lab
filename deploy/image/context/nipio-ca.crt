@@ -1,0 +1,71 @@
+-----BEGIN CERTIFICATE-----
+MIIDMzCCAhugAwIBAgIUKFLlzRhaBbJ6caHaT0dkOpp0GQcwDQYJKoZIhvcNAQEL
+BQAwITEfMB0GA1UEAwwWMTAuMTk5LjY0LjIwLm5pcC5pbyBDQTAeFw0yNjA4Mjcw
+OTE4NTFaFw00NjA4MjIwOTE4NTFaMCExHzAdBgNVBAMMFjEwLjE5OS42NC4yMC5u
+aXAuaW8gQ0EwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCdhoKqa8QW
+/VJFeNF49SuVw6hwH6D0okxgm84lfB7nbcuwo0FyZ0nZT+3qA1NgyRNpOlciTE93
+SZyy41gnC1DF3lnwuaMOLhsc12Yo5PK1VJeIRS9kUEkb1OWLeVigSvt2JGhHQ5lz
+CPZaKLttOZ5usqS0WUOwRriUFR8AP1i+Xzq0UvP8w9XtXF7/0KbDLknjOw/zF/+p
+OSNUe04h8VSg8vdNfBV6gnRvuIyKTbcptfSyrvM7dWxOrGuxc/Ihz84GtKqCUpdm
+2pzSO3Nx1dx7dsfQAjojavFaXLjgGr2CXfld24NmnXSo4a0YDIHjlx8w9FGv4j5s
+PhBABXZ0ZNkpAgMBAAGjYzBhMB8GA1UdIwQYMBaAFJSeIcSko1pH75cqz0IfZ8Qy
+k73fMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMB0GA1UdDgQWBBSU
+niHEpKNaR++XKs9CH2fEMpO93zANBgkqhkiG9w0BAQsFAAOCAQEAfW7jwq+0dlk6
+bjG8M9n97TKAGgfRR9+u+upkpXD6V+SBAvdnxAYVb6iYUKswkYtv9BdHbTwGYZ2q
+ISW7oii9nXVxALZWWb+Uf0LPt5qzWtb3GMPo+QIaB7tvpYsoR1FyiLCsgrRqLxCB
+DEMLrHrlu89Lh6+pHPXeIj7kP6AWHUUJb6kyPqFifpQYvUsSoWGJ8Qktl9h4lxcB
+oWh6beCV5SaDyUs592BSnqh3Vhp07ZgRsw2Vtk4GuA87f73OswdLKXEr//6G/EFt
+ZX80bBaNMaLkG4P6cnQxKaId/UPSGQcdMeuC60KnerbQ+S/nKOyG3jONFOTdYAwr
+uCF4K46QHw==
+-----END CERTIFICATE-----
+---
+Server certificate
+subject=CN=*.10.199.64.20.nip.io
+issuer=CN=10.199.64.20.nip.io CA
+---
+No client certificate CA names sent
+Peer signing digest: SHA256
+Peer signature type: rsa_pss_rsae_sha256
+Negotiated TLS1.3 group: X25519MLKEM768
+---
+SSL handshake has read 3474 bytes and written 1637 bytes
+Verification error: self-signed certificate in certificate chain
+---
+New, TLSv1.3, Cipher is TLS_AES_128_GCM_SHA256
+Protocol: TLSv1.3
+Server public key is 2048 bit
+This TLS version forbids renegotiation.
+Compression: NONE
+Expansion: NONE
+No ALPN negotiated
+Early data was not sent
+Verify return code: 19 (self-signed certificate in certificate chain)
+---
+---
+Post-Handshake New Session Ticket arrived:
+SSL-Session:
+    Protocol  : TLSv1.3
+    Cipher    : TLS_AES_128_GCM_SHA256
+    Session-ID: 4E30EFF45CD0C7DA6B635B3B778818CE567F70A1D9688F209CD64D0F209B8251
+    Session-ID-ctx: 
+    Resumption PSK: 8E5122EF73E92790A1998A7370DF30E0958EC7B67BC607C5B209EAD9C132FFD1
+    PSK identity: None
+    PSK identity hint: None
+    SRP username: None
+    TLS session ticket lifetime hint: 604800 (seconds)
+    TLS session ticket:
+    0000 - 82 1e d7 19 85 f4 2a 7d-76 59 36 28 a3 ee 0d e9   ......*}vY6(....
+    0010 - df 4f b7 ef 1f 2a ca 67-eb 11 dd 51 66 82 8d e1   .O...*.g...Qf...
+    0020 - 0f bf 81 a8 4e 90 dd a0-e9 ff ad fa 65 e1 c3 4e   ....N.......e..N
+    0030 - ea 3b ba 61 34 de 15 ea-10 31 87 5b 26 aa df 93   .;.a4....1.[&...
+    0040 - 54 61 cd a7 06 ff 3e 5e-02 75 26 c9 59 a0 cd 03   Ta....>^.u&.Y...
+    0050 - 74 ce 96 d2 ea 9d c6 55-4f 61 47 07 f7 bc 0a 63   t......UOaG....c
+    0060 - 69 db 95 e8 49 b2 41 52-f2                        i...I.AR.
+
+    Start Time: 1788095381
+    Timeout   : 7200 (sec)
+    Verify return code: 19 (self-signed certificate in certificate chain)
+    Extended master secret: no
+    Max Early Data: 0
+---
+read R BLOCK
