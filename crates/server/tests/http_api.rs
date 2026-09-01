@@ -891,3 +891,33 @@ async fn rename_repo_updates_listing_and_cascades() {
     let mut resp = app.send("GET", "/api/v1/repos/o/old/branches", None, None).await;
     assert_eq!(TestApp::status(&mut resp).await, 404);
 }
+
+#[tokio::test]
+async fn ops_service_sync_validates_body() {
+    let app = seeded_app().await;
+    // Missing org/repo/rev → 400 before any k8s call.
+    let mut resp = app
+        .json(
+            "POST",
+            "/api/v1/ops/services/s1/sync",
+            Some("wtoken"),
+            obj(&[("org", "".into()), ("repo", "".into()), ("rev", "".into())]),
+        )
+        .await;
+    assert_eq!(TestApp::status(&mut resp).await, 400);
+    // Unknown namespace → 400.
+    let mut resp = app
+        .json(
+            "POST",
+            "/api/v1/ops/services/s1/sync",
+            Some("wtoken"),
+            obj(&[
+                ("org", "o".into()),
+                ("repo", "r".into()),
+                ("rev", "main".into()),
+                ("namespace", "nope".into()),
+            ]),
+        )
+        .await;
+    assert_eq!(TestApp::status(&mut resp).await, 400);
+}

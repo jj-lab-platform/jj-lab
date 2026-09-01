@@ -123,3 +123,19 @@ pub async fn rollback(release_name: &str, revision: Option<u32>, namespace: Opti
     }
     run(&args, Duration::from_secs(300)).await
 }
+/// Fetch a release's user-supplied values (`helm get values --all`, JSON).
+pub async fn values(release_name: &str, namespace: Option<&str>) -> RepoResult<serde_json::Value> {
+    let mut args: Vec<String> = vec![
+        "get".into(),
+        "values".into(),
+        release_name.into(),
+        "--all".into(),
+        "--output".into(),
+        "json".into(),
+    ];
+    if let Some(ns) = namespace {
+        args.push(format!("--namespace={ns}"));
+    }
+    let out = run(&args, Duration::from_secs(120)).await?;
+    serde_json::from_str(&out).map_err(|e| RepoError::Other(format!("helm values parse: {e}")))
+}

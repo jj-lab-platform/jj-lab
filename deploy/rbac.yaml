@@ -23,7 +23,10 @@ metadata:
   namespace: temp
 rules:
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "events"]
+    resources: ["pods", "pods/log", "events", "services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["batch"]
     resources: ["jobs"]

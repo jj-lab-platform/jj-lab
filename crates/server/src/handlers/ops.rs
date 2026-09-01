@@ -16,7 +16,7 @@ use jjlab_git::task::TaskKind;
 
 /// The kube client is built lazily and cached; a single client serves all
 /// per-request namespaces (Api::namespaced reuses it).
-async fn k8s_client() -> Result<kube::Client, Response> {
+pub(crate) async fn k8s_client() -> Result<kube::Client, Response> {
     match jjlab_git::runtime::connect_client().await {
         Ok((client, _)) => Ok(client),
         Err(e) => Err(json_err(StatusCode::SERVICE_UNAVAILABLE, e.to_string())),
@@ -24,7 +24,7 @@ async fn k8s_client() -> Result<kube::Client, Response> {
 }
 
 #[allow(clippy::result_large_err)]
-fn resolve_ns(state: &AppState, requested: Option<&str>) -> Result<String, Response> {
+pub(crate) fn resolve_ns(state: &AppState, requested: Option<&str>) -> Result<String, Response> {
     state
         .namespaces
         .resolve(requested)
@@ -143,7 +143,11 @@ pub async fn ops_service_create(
     let kind = body.kind.clone();
     let image = body.image.clone();
     match sc.ensure(&body, &ns).await {
-        Ok(()) => Json(json!({ "ok": true, "name": name, "kind": kind, "image": image, "namespace": ns })).into_response(),
+        Ok(st) => Json(json!({
+            "ok": true, "name": name, "kind": kind, "image": image,
+            "namespace": ns, "ready": st.ready, "pod_ip": st.pod_ip,
+        }))
+        .into_response(),
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
@@ -224,9 +228,17 @@ pub async fn ops_service_get(
         Ok(c) => c,
         Err(e) => return e,
     };
-    let sc = jjlab_git::service::ServiceClient::new(client);
+    let sc = jjlab_git::service::ServiceClient::new(client.clone());
     match sc.status(&name, &ns).await {
-        Ok(s) => Json(s).into_response(),
+        Ok(s) => {
+            let port = jjlab_git::service::first_container_port_of_pod(&s, &client, &ns, &name).await;
+            let body = json!({
+                "name": s.name, "kind": s.kind, "replicas": s.replicas,
+                "ready": s.ready, "phase": s.phase, "pod_ip": s.pod_ip,
+                "worker_url": s.worker_url_on(port),
+            });
+            Json(body).into_response()
+        }
         Err(e) => json_err(StatusCode::NOT_FOUND, e.to_string()),
     }
 }
@@ -493,5 +505,95 @@ pub async fn ops_images(State(state): State<AppState>) -> Response {
             }
         }
         None => Json(json!({ "repositories": [] })).into_response(),
+    }
+}
+/// `GET /ops/services/{name}/pods` — the pods behind a service.
+pub async fn ops_service_pods(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let ns = match resolve_ns(&state, q.get("namespace").map(String::as_str)) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    let client = match k8s_client().await {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    match jjlab_git::service::service_pods(&client, &name, &ns).await {
+        Ok(pods) => Json(json!({ "pods": pods })).into_response(),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// `GET /ops/services/{name}/events` — rollout debugging events.
+pub async fn ops_service_events(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let ns = match resolve_ns(&state, q.get("namespace").map(String::as_str)) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    let client = match k8s_client().await {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    match jjlab_git::service::service_events(&client, &name, &ns).await {
+        Ok(events) => Json(json!({ "events": events })).into_response(),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// `GET /ops/services/{name}/revisions` — ReplicaSet revisions (deployments).
+pub async fn ops_service_revisions(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let ns = match resolve_ns(&state, q.get("namespace").map(String::as_str)) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    let client = match k8s_client().await {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    match jjlab_git::service::service_revisions(&client, &name, &ns).await {
+        Ok(revs) => Json(json!({ "revisions": revs })).into_response(),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// `POST /ops/services/{name}/rollback` — replay a revision's pod template.
+pub async fn ops_service_rollback(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<ServiceRollbackBody>,
+) -> Response {
+    let ns = match resolve_ns(&state, body.namespace.as_deref()) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    let client = match k8s_client().await {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    match jjlab_git::service::service_rollback(&client, &name, body.revision, &ns).await {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// `GET /ops/helm/releases/{name}/values` — release values.
+pub async fn ops_helm_values(
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+    Path(name): Path<String>,
+) -> Response {
+    match jjlab_git::helm::values(&name, q.get("namespace").map(String::as_str)).await {
+        Ok(v) => Json(json!({ "values": v })).into_response(),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }

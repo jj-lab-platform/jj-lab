@@ -49,6 +49,8 @@ tokio-util = { version = "0.7", features = ["io"] }
 pollster = "1.0"
 include_dir.workspace = true
 rustls.workspace = true
+reqwest.workspace = true
+url.workspace = true
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

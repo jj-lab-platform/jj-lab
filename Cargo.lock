@@ -2477,6 +2477,7 @@ dependencies = [
  "pkglab-swift",
  "pollster",
  "prost",
+ "reqwest",
  "rustls",
  "serde",
  "serde_json",
@@ -2486,6 +2487,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

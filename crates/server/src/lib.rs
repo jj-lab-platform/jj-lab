@@ -33,6 +33,7 @@ pub struct AppState {
     pub registry: RegistryHandle,
     pub namespaces: Arc<jjlab_git::namespaces::NamespaceRegistry>,
     pub tasks: Arc<jjlab_git::task::TaskRegistry>,
+    pub sync_cache: Arc<crate::handlers::sync::SyncCache>,
 }
 
 impl AppState {
@@ -50,6 +51,7 @@ impl AppState {
             registry: None,
             namespaces: Arc::new(jjlab_git::namespaces::NamespaceRegistry::from_env()),
             tasks: Arc::new(jjlab_git::task::TaskRegistry::new()),
+            sync_cache: Arc::new(crate::handlers::sync::SyncCache::new()),
         }
     }
 
@@ -239,11 +241,30 @@ pub struct RebaseBody {
     pub dest: String,
 }
 
+/// Sync body: which repo snapshot to push into a service's worker.
+#[derive(Deserialize)]
+pub struct ServiceSyncBody {
+    pub org: String,
+    pub repo: String,
+    pub rev: String,
+    #[serde(default)]
+    pub namespace: Option<String>,
+}
+
 /// Rollback a helm release to a revision.
 #[derive(Deserialize)]
 pub struct RollbackBody {
     #[serde(default)]
     pub revision: Option<u32>,
+    #[serde(default)]
+    pub namespace: Option<String>,
+}
+
+/// Rollback a deployment to a ReplicaSet revision (0 = previous).
+#[derive(Deserialize)]
+pub struct ServiceRollbackBody {
+    #[serde(default)]
+    pub revision: i64,
     #[serde(default)]
     pub namespace: Option<String>,
 }
@@ -594,6 +615,11 @@ pub fn build_router(state: AppState) -> axum::Router {
                     .post(ops_service_restart),
             )
             .route("/api/v1/ops/services/{name}/scale", post(ops_service_scale))
+            .route("/api/v1/ops/services/{name}/sync", post(crate::handlers::sync::ops_service_sync))
+            .route("/api/v1/ops/services/{name}/pods", get(ops_service_pods))
+            .route("/api/v1/ops/services/{name}/events", get(ops_service_events))
+            .route("/api/v1/ops/services/{name}/revisions", get(ops_service_revisions))
+            .route("/api/v1/ops/services/{name}/rollback", post(ops_service_rollback))
             .route("/api/v1/ops/helm/install", post(ops_helm_install))
             .route("/api/v1/ops/helm/releases", get(ops_helm_list))
             .route(
@@ -601,6 +627,7 @@ pub fn build_router(state: AppState) -> axum::Router {
                 get(ops_helm_status).delete(ops_helm_uninstall),
             )
             .route("/api/v1/ops/helm/releases/{name}/rollback", post(ops_helm_rollback))
+            .route("/api/v1/ops/helm/releases/{name}/values", get(ops_helm_values))
             .route("/api/v1/ops/builds", post(ops_build))
             .route("/api/v1/ops/packages", get(ops_packages))
             .route("/api/v1/ops/images", get(ops_images))

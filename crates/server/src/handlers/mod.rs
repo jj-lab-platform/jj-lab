@@ -13,6 +13,7 @@ pub mod mr;
 pub mod ops;
 pub mod read_ext;
 pub mod releases;
+pub mod sync;
 pub mod write;
 
 pub use actions::*;
