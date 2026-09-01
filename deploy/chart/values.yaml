@@ -40,6 +40,9 @@ dataDir: /data
 # --- rust runtime tuning ---
 rustLog: info
 
+# --- self URL: in-cluster address CI pods fetch repo snapshots from ---
+selfUrl: "http://jj-lab.temp.svc.cluster.local"
+
 # --- static access tokens (`token=level` comma-joined, levels read/write) ---
 #     Anonymous has read-only; write APIs + git push need a write token.
 tokens: "devtoken=write"
