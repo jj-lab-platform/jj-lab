@@ -8,7 +8,7 @@ fullnameOverride: "jj-lab"
 
 # --- runtime image (built from ~/jj-lab and pushed to the temp artifact) ---
 image:
-  repository: artifact.temp.svc.cluster.local/jj-lab
+  repository: forgejo.develop.10.199.64.20.nip.io/root/jj-lab
   tag: "v0.3.12"
   pullPolicy: Always
 
