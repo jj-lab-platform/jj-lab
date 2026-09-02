@@ -35,6 +35,15 @@ pub struct HelmInstallRequest {
     pub values: serde_json::Value,
     #[serde(default)]
     pub namespace: Option<String>,
+    /// Source repo context (org/repo/bookmark): when present and `chart` is a
+    /// repo-relative path, jjlab checks out the tree and passes helm an
+    /// absolute chart directory. Mirrors `BuildRequest`.
+    #[serde(default)]
+    pub org: String,
+    #[serde(default)]
+    pub repo: String,
+    #[serde(default)]
+    pub bookmark: String,
 }
 
 /// Run `helm <args...>` and return stdout on success.
@@ -84,7 +93,9 @@ pub async fn install_or_upgrade(req: &HelmInstallRequest, chart_path: &str) -> R
 
 pub async fn list(namespace: &str) -> RepoResult<Vec<serde_json::Value>> {
     let out = run(
-        &["list".into(), "--all".into(), "--output".into(), "json".into(), format!("--namespace={namespace}")],
+        // helm v4 dropped `--all`; `helm list` enumerates every release by
+        // default. Using it is an alias for `-A` only in v3 and errors in v4.
+        &["list".into(), "--output".into(), "json".into(), format!("--namespace={namespace}")],
         Duration::from_secs(120),
     )
     .await?;

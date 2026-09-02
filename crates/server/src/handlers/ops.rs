@@ -448,14 +448,64 @@ pub async fn ops_helm_install(
         } else {
             chart
         };
+        // Resolve a repo-relative chart_ref into an absolute directory: when
+        // the request carries a source repo (org/repo/bookmark) and the chart
+        // ref is neither an absolute path nor a URL, check out that repo at
+        // the bookmark and point helm at `<tmp>/<chart_path>`. Without this,
+        // a bare "e2e-chart" is handed to helm verbatim and fails with
+        // "non-absolute URLs should be in form of repo_name/path_to_chart".
+        let mut resolved_chart = chart_path.clone();
+        let store = state.store.clone();
+        let org = body.org.clone();
+        let repo = body.repo.clone();
+        let bookmark = body.bookmark.clone();
+        let needs_checkout = !org.is_empty() && !repo.is_empty()
+            && !chart_path.starts_with("http://")
+            && !chart_path.starts_with("https://")
+            && !std::path::Path::new(&chart_path).is_absolute();
+        if needs_checkout {
+            let dir = std::env::temp_dir().join(format!("jjlab-helm-chart-{task_id}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::create_dir_all(&dir);
+            let (store2, org2, repo2, bookmark2) =
+                (store.clone(), org.clone(), repo.clone(), bookmark.clone());
+            let dir2 = dir.clone();
+            let checkout = tokio::task::spawn_blocking(move || {
+                pollster::block_on(jjlab_git::read::checkout_tree(
+                    &store2, &org2, &repo2, &bookmark2, &dir2,
+                ))
+            })
+            .await;
+            match checkout {
+                Ok(Ok(())) => {
+                    resolved_chart = dir
+                        .join(&chart_path)
+                        .to_string_lossy()
+                        .to_string();
+                }
+                Ok(Err(e)) => {
+                    task.log(&format!("helm chart checkout error: {e}"));
+                    task.finish(false, None, Some(e.to_string()));
+                    return;
+                }
+                Err(e) => {
+                    task.log(&format!("helm chart checkout join error: {e}"));
+                    task.finish(false, None, Some(e.to_string()));
+                    return;
+                }
+            }
+        }
         let req = jjlab_git::helm::HelmInstallRequest {
             release_name: body.release_name.clone(),
-            chart: chart_path.clone(),
+            chart: resolved_chart.clone(),
             version: body.version.clone(),
             values: body.values.clone(),
             namespace: body.namespace.clone(),
+            org: org.clone(),
+            repo: repo.clone(),
+            bookmark: bookmark.clone(),
         };
-        match jjlab_git::helm::install_or_upgrade(&req, &chart_path).await {
+        match jjlab_git::helm::install_or_upgrade(&req, &resolved_chart).await {
             Ok(out) => {
                 task.log(&format!("helm: {out}"));
                 task.finish(true, Some(out), None);
