@@ -7,6 +7,7 @@
 # Base images come from the in-cluster artifact registry; crate/npm deps go
 # through the in-cluster indexes, so the build never reaches the public net.
 ARG REGISTRY=jj-lab.temp.10.199.64.20.nip.io
+ARG REGISTRY
 ARG RUST_IMAGE=1.97.1-alpine3.24
 ARG NODE_IMAGE=22-alpine
 
@@ -28,6 +29,7 @@ ARG NODE_IMAGE=22-alpine
 FROM ${REGISTRY}/library/rust:${RUST_IMAGE} AS build
 ARG HTTP_PROXY=http://mihomo.develop.svc.cluster.local:7890
 ARG HTTPS_PROXY=http://mihomo.develop.svc.cluster.local:7890
+ARG REGISTRY
 ENV HTTP_PROXY=${HTTP_PROXY} \
     HTTPS_PROXY=${HTTPS_PROXY} \
     NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc,.nip.io,10.199.64.20,.develop.10.199.64.20.nip.io \
@@ -40,9 +42,9 @@ ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
     CARGO_REGISTRIES_CRATES_IO_INDEX=${REGISTRY}/pkgs/cargo/index/
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src && printf 'fn main() {}\n' > src/main.rs
+COPY crates ./crates
 RUN --mount=type=cache,target=/root/.cargo \
     cargo fetch --target x86_64-unknown-linux-musl
-COPY crates ./crates
 COPY --from=frontend /dist ./dist
 RUN --mount=type=cache,target=/root/.cargo \
     --mount=type=cache,target=/build/target \
