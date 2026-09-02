@@ -35,7 +35,7 @@ ENV HTTP_PROXY=${HTTP_PROXY} \
     NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc,.nip.io,10.199.64.20,.develop.10.199.64.20.nip.io \
     CARGO_HOME=/root/.cargo
 RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories \
-    && apk add --no-cache build-base \
+    && apk add --no-cache build-base protobuf \
     && rustup target add x86_64-unknown-linux-musl
 WORKDIR /build
 ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
