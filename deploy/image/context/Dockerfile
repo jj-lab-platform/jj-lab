@@ -20,7 +20,7 @@ COPY build/jjlab /opt/jjlab/jjlab
 COPY build/buildctl /usr/local/bin/buildctl
 COPY build/kubectl /usr/local/bin/kubectl
 COPY build/helm /usr/local/bin/helm
-# Trust the in-cluster nipio CA so buildctl can reach forgejo OCI over TLS.
+# Buildkitd reaches jjlab OCI over the in-cluster svc (plain HTTP).
 COPY nipio-ca.crt /usr/local/share/ca-certificates/nipio.crt
 RUN update-ca-certificates
 ENV JJLAB_PORT=8080 \
