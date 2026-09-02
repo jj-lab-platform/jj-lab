@@ -18,7 +18,7 @@ ARG NODE_IMAGE=22-alpine
  ENV HTTP_PROXY=${HTTP_PROXY} \
      HTTPS_PROXY=${HTTPS_PROXY} \
      NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc,.nip.io,10.199.64.20,.develop.10.199.64.20.nip.io \
-     NPM_CONFIG_REGISTRY=https://${REGISTRY}/pkgs/npm/
+     NPM_CONFIG_REGISTRY=https://registry.npmjs.org/
  WORKDIR /fe
  COPY frontend/package.json frontend/pnpm-lock.yaml ./
  RUN npm install -g pnpm@9 && pnpm install --frozen-lockfile || pnpm install
