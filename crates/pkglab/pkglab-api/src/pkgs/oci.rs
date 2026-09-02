@@ -98,11 +98,10 @@ impl ProtocolHandler for OciHandler {
                 blobs: blobs.to_vec(),
                 digest: digest.to_string(),
                 source: "push".into(),
+                ..Default::default()
             };
             api.put(art).await
-        ,
-        ..Default::default()
-    }
+        }
 
         // Tag reference.
         if !reference_is_digest(reference) {
