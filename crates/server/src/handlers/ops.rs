@@ -329,6 +329,7 @@ pub async fn ops_build(
     let no_cache = body.no_cache;
     let containerfile = body.containerfile.clone();
     let raw = body.raw;
+    let dockerfile = body.dockerfile.clone();
 
     tokio::spawn(async move {
         let task2 = task.clone();
@@ -367,6 +368,7 @@ pub async fn ops_build(
             ctx_dir.as_deref(),
             body_opt,
             image.as_deref(),
+            dockerfile.as_deref(),
             &export,
             &build_args,
             no_cache,

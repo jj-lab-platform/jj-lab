@@ -78,6 +78,7 @@ pub async fn run_build(
     ctx_dir: Option<&Path>,
     containerfile_body: Option<&str>,
     image: Option<&str>,
+    dockerfile_name: Option<&str>,
     export: &str,
     build_args: &[String],
     no_cache: bool,
@@ -111,13 +112,19 @@ pub async fn run_build(
     args.push("--local".into());
     args.push(format!("dockerfile={}", context.to_string_lossy()));
 
-    // When the build context is a raw Containerfile body (not a repo checkout),
-    // buildkit looks for a file named `Dockerfile` by default. Point it at the
-    // `Containerfile` we wrote so raw builds work (previously they failed with
-    // "failed to read dockerfile: open Dockerfile: no such file or directory").
-    if containerfile_body.is_some() {
+    // buildkit's dockerfile.v0 frontend looks for a file named `Dockerfile`
+    // by default. Honour a caller-supplied filename (e.g. `Containerfile`)
+    // and force `Containerfile` for raw builds. Without this, repo builds that
+    // use a non-default Dockerfile name fail with "open Dockerfile: no such
+    // file or directory".
+    let fname = if containerfile_body.is_some() {
+        "Containerfile".to_string()
+    } else {
+        dockerfile_name.unwrap_or("Dockerfile").to_string()
+    };
+    if fname != "Dockerfile" {
         args.push("--opt".into());
-        args.push("filename=Containerfile".into());
+        args.push(format!("filename={fname}"));
     }
 
     for ba in build_args {
