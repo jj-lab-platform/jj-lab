@@ -26,7 +26,8 @@ fn json_ok(v: serde_json::Value) -> Response {
 }
 
 /// Encode a module path per the Go module proxy spec: uppercase letters
-/// become `!<lower>`.
+/// become `!<lower>`. Used only to build the URL for the upstream
+/// proxy.golang.org request — never as a local storage key.
 pub fn encode_module_path(m: &str) -> String {
     let mut out = String::with_capacity(m.len());
     for c in m.chars() {
@@ -35,6 +36,58 @@ pub fn encode_module_path(m: &str) -> String {
             out.push(c.to_ascii_lowercase());
         } else {
             out.push(c);
+        }
+    }
+    out
+}
+
+/// Percent-decode a URL path segment (e.g. `%2F` -> `/`, `%21` -> `!`).
+/// The Go proxy client percent-encodes module path segments, so a request may
+/// arrive as `github.com%2Fabcp-sdk%2Fabc-protocol-go` while another client
+/// sends the same module unencoded. Decoding gives a single canonical module
+/// string so the two never split into separate storage entries.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() + 1 && i + 2 < bytes.len() && bytes[i + 1].is_ascii_hexdigit() {
+            if i + 2 < bytes.len() && bytes[i + 2].is_ascii_hexdigit() {
+                let hi = (bytes[i + 1] as char).to_digit(16).unwrap_or(0);
+                let lo = (bytes[i + 2] as char).to_digit(16).unwrap_or(0);
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Canonicalize a module path into the single form used as the local storage
+/// key. Go module paths are case-sensitive but the proxy resolves them
+/// case-insensitively; we store the lowercase path. It also reverses:
+///   - URL-encoding (`%2F`, `%21`) → decoded chars
+///   - proxy-style `!x` (uppercase marker) → `x` (lowercased)
+/// so a module stored by a `PUT /upload` (plain lowercase) and one cached by
+/// pull-through (proxy/url-encoded) land under the SAME key.
+pub fn normalize_module(m: &str) -> String {
+    let decoded = percent_decode(m);
+    let mut out = String::with_capacity(decoded.len());
+    let mut chars = decoded.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '!' {
+            match chars.peek() {
+                Some(&n) if n.is_ascii_alphabetic() => {
+                    out.push(n.to_ascii_lowercase());
+                    chars.next();
+                }
+                _ => out.push(c),
+            }
+        } else {
+            out.push(c.to_ascii_lowercase());
         }
     }
     out
@@ -82,10 +135,10 @@ async fn dispatch(
     }
 
     if let Some(module) = p.strip_suffix("/@latest") {
-        return latest(&state, module).await;
+        return latest(&state, &normalize_module(module)).await;
     }
     if let Some(module) = p.strip_suffix("/@v/list") {
-        return versions(&state, module).await;
+        return versions(&state, &normalize_module(module)).await;
     }
     for ext in [".info", ".mod", ".zip"] {
         if let Some(rest) = p.strip_suffix(ext) {
@@ -93,6 +146,7 @@ async fn dispatch(
             if version.is_empty() {
                 break;
             }
+            let module = normalize_module(&module);
             return match ext {
                 ".info" => info(&state, &module, &version).await,
                 ".mod" => go_mod(&state, &module, &version).await,
@@ -312,9 +366,13 @@ pub async fn store_version_src(
     source: &str,
 ) {
     let version = if version.is_empty() { "v0.0.0" } else { version };
+    // Canonical storage key: the normalized (lowercased, decoded) module path.
+    // Ensures a plain `PUT /upload` and a pull-through cache hit land under the
+    // same key regardless of the client's URL-encoding or case.
+    let module = normalize_module(module);
     let mut art = Artifact {
         format: "go".into(),
-        repository: module.to_string(),
+        repository: module.clone(),
         version: version.to_string(),
         source: source.to_string(),
         ..Default::default()
@@ -349,12 +407,27 @@ mod tests {
     }
 
     #[test]
+    fn normalize_module_paths() {
+        // plain lowercase unchanged
+        assert_eq!(normalize_module("github.com/abcp-sdk/abc-protocol-go"), "github.com/abcp-sdk/abc-protocol-go");
+        // URL-encoded segments decoded
+        assert_eq!(normalize_module("github.com%2Fabcp-sdk%2Fabc-protocol-go"), "github.com/abcp-sdk/abc-protocol-go");
+        // proxy-style !x decoded
+        assert_eq!(normalize_module("github.com/!abcp-!sdk/!abc-protocol-!go"), "github.com/abcp-sdk/abc-protocol-go");
+        // url-encoded proxy-style
+        assert_eq!(normalize_module("github.com%2F%21abcp-%21sdk%2F%21abc-protocol-%21go"), "github.com/abcp-sdk/abc-protocol-go");
+        // uppercase canonicalized to lowercase
+        assert_eq!(normalize_module("github.com/Abcp-Sdk/Abc-protocol-Go"), "github.com/abcp-sdk/abc-protocol-go");
+    }
+
+    #[test]
     fn split_module_version_paths() {
         assert_eq!(
             split_module_version("github.com/u/r/@v/v1.0.0"),
             ("github.com/u/r".to_string(), "v1.0.0".to_string())
         );
         assert_eq!(split_module_version("plain"), ("plain".to_string(), "".to_string()));
+        assert_eq!(split_module_version("github.com%2Fu%2Fr/@v/v1.0.0"), ("github.com%2Fu%2Fr".to_string(), "v1.0.0".to_string()));
     }
 
     #[test]
