@@ -2472,6 +2472,8 @@ dependencies = [
  "base64",
  "http",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "include_dir",
  "jjlab-core",
  "jjlab-git",

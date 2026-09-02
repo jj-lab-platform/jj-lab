@@ -88,6 +88,11 @@ axum = { version = "0.8", features = ["macros", "multipart", "http2"] }
 tower = "0.5"
 hyper = "1"
 http-body-util = "0.1"
+# Custom HTTP serve (hyper-util): we override HTTP/1.1 header_read_timeout so
+# keep-alive connections waited on by buildkit (IdleConnTimeout ~90s) are not
+# closed by the default 30s idle reaper — this removes the intermittent
+# "server closed idle connection" on registry auth POST.
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "service"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "stream", "multipart"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "process", "fs", "time"] }
 
