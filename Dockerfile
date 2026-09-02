@@ -6,7 +6,7 @@
 # rust (musl via cargo), then an alpine runtime that layers in the CLIs.
 # Base images come from the in-cluster artifact registry; crate/npm deps go
 # through the in-cluster indexes, so the build never reaches the public net.
-ARG REGISTRY=jj-lab.temp.10.199.64.20.nip.io
+ARG REGISTRY=jj-lab.temp.svc.cluster.local
 ARG REGISTRY
 ARG RUST_IMAGE=1.97.1-alpine3.24
 ARG NODE_IMAGE=22-alpine
@@ -17,7 +17,7 @@ ARG NODE_IMAGE=22-alpine
  ARG HTTPS_PROXY=http://mihomo.develop.svc.cluster.local:7890
  ENV HTTP_PROXY=${HTTP_PROXY} \
      HTTPS_PROXY=${HTTPS_PROXY} \
-     NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc,.nip.io,10.199.64.20,.develop.10.199.64.20.nip.io \
+     NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc \
      NPM_CONFIG_REGISTRY=https://registry.npmjs.org/
  WORKDIR /fe
  COPY frontend/package.json frontend/pnpm-lock.yaml ./
@@ -32,7 +32,7 @@ ARG HTTPS_PROXY=http://mihomo.develop.svc.cluster.local:7890
 ARG REGISTRY
 ENV HTTP_PROXY=${HTTP_PROXY} \
     HTTPS_PROXY=${HTTPS_PROXY} \
-    NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc,.nip.io,10.199.64.20,.develop.10.199.64.20.nip.io \
+    NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc \
     CARGO_HOME=/root/.cargo
 RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories \
     && apk add --no-cache build-base protobuf \
@@ -67,6 +67,6 @@ ENV JJLAB_PORT=8080 \
     JJLAB_LOGS=/data/logs \
     JJLAB_CI_NAMESPACE=temp \
     JJLAB_BUILDKIT_ADDR=tcp://buildkitd.temp.svc.cluster.local:1234 \
-    JJLAB_CI_IMAGE=jj-lab.temp.10.199.64.20.nip.io/library/alpine:3
+    JJLAB_CI_IMAGE=jj-lab.temp.svc.cluster.local/library/alpine:3
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/jjlab"]

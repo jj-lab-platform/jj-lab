@@ -8,7 +8,7 @@ fullnameOverride: "jj-lab"
 
 # --- runtime image (built from ~/jj-lab and pushed to the temp artifact) ---
 image:
-  repository: forgejo.develop.10.199.64.20.nip.io/root/jj-lab
+  repository: jj-lab.temp.svc.cluster.local/root/jj-lab
   tag: "v0.3.12"
   pullPolicy: Always
 
@@ -41,7 +41,7 @@ persistence:
 # --- proxy env for the jjlab process (git/e2e net access; the scheduler
 #     forces direct k8s API access regardless, see runtime.rs) ---
 httpProxy: "http://mihomo.develop.svc.cluster.local:7890"
-noProxy: "localhost,127.0.0.1,.svc.cluster.local,.svc,.nip.io,10.199.64.20,.develop.10.199.64.20.nip.io"
+noProxy: "localhost,127.0.0.1,.svc.cluster.local,.svc"
 
 # --- in-cluster data/asset/log locations (emptyDir-backed in dev). jjlab keeps
 #     its sqlite db + bare repos + assets + logs all under this single dir ---
@@ -67,7 +67,7 @@ registry:
   root: /data/pkglab
   # External base URL used for auth challenge realms + self URLs in protocol
   # responses (OCI token endpoint, cargo/pypi/npm self links, ...).
-  selfBase: "https://jj-lab.temp.10.199.64.20.nip.io"
+  selfBase: "http://jj-lab.temp.svc.cluster.local"
 
 # --- native CI ---
 ci:
