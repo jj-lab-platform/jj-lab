@@ -111,6 +111,15 @@ pub async fn run_build(
     args.push("--local".into());
     args.push(format!("dockerfile={}", context.to_string_lossy()));
 
+    // When the build context is a raw Containerfile body (not a repo checkout),
+    // buildkit looks for a file named `Dockerfile` by default. Point it at the
+    // `Containerfile` we wrote so raw builds work (previously they failed with
+    // "failed to read dockerfile: open Dockerfile: no such file or directory").
+    if containerfile_body.is_some() {
+        args.push("--opt".into());
+        args.push("filename=Containerfile".into());
+    }
+
     for ba in build_args {
         args.push("--opt".into());
         args.push(format!("build-arg:{ba}"));
