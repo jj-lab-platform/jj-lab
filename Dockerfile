@@ -11,22 +11,23 @@ ARG RUST_IMAGE=1.97.1-alpine3.24
 ARG NODE_IMAGE=22-alpine
 
 # ---- frontend ----
-FROM ${REGISTRY}/library/node:${NODE_IMAGE} AS frontend
-ARG HTTP_PROXY=http://mihomo.develop.svc.cluster.local:789
-ARG HTTPS_PROXY=http://mihomo.develop.svc.cluster.local:789
-ENV HTTP_PROXY=${HTTP_PROXY} \
-    HTTPS_PROXY=${HTTPS_PROXY} \
-    NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc,.nip.io,10.199.64.20,.develop.10.199.64.20.nip.io
-WORKDIR /fe
-COPY frontend/package.json frontend/pnpm-lock.yaml ./
-RUN corepack enable && pnpm install --frozen-lockfile || pnpm install
-COPY frontend/ ./
-RUN pnpm build
+ FROM ${REGISTRY}/library/node:${NODE_IMAGE} AS frontend
+ ARG HTTP_PROXY=http://mihomo.develop.svc.cluster.local:7890
+ ARG HTTPS_PROXY=http://mihomo.develop.svc.cluster.local:7890
+ ENV HTTP_PROXY=${HTTP_PROXY} \
+     HTTPS_PROXY=${HTTPS_PROXY} \
+     NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc,.nip.io,10.199.64.20,.develop.10.199.64.20.nip.io \
+     NPM_CONFIG_REGISTRY=https://${REGISTRY}/pkgs/npm/
+ WORKDIR /fe
+ COPY frontend/package.json frontend/pnpm-lock.yaml ./
+ RUN npm install -g pnpm@9 && pnpm install --frozen-lockfile || pnpm install
+ COPY frontend/ ./
+ RUN pnpm build
 
 # ---- rust build ----
 FROM ${REGISTRY}/library/rust:${RUST_IMAGE} AS build
-ARG HTTP_PROXY=http://mihomo.develop.svc.cluster.local:789
-ARG HTTPS_PROXY=http://mihomo.develop.svc.cluster.local:789
+ARG HTTP_PROXY=http://mihomo.develop.svc.cluster.local:7890
+ARG HTTPS_PROXY=http://mihomo.develop.svc.cluster.local:7890
 ENV HTTP_PROXY=${HTTP_PROXY} \
     HTTPS_PROXY=${HTTPS_PROXY} \
     NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc,.nip.io,10.199.64.20,.develop.10.199.64.20.nip.io \
