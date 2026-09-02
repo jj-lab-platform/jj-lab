@@ -84,7 +84,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 include_dir = "0.7"
 
 # --- http / server ---
-axum = { version = "0.8", features = ["macros", "multipart"] }
+axum = { version = "0.8", features = ["macros", "multipart", "http2"] }
 tower = "0.5"
 hyper = "1"
 http-body-util = "0.1"
