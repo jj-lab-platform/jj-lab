@@ -6,7 +6,7 @@
 # rust (musl via cargo), then an alpine runtime that layers in the CLIs.
 # Base images come from the in-cluster artifact registry; crate/npm deps go
 # through the in-cluster indexes, so the build never reaches the public net.
-ARG REGISTRY=artifact.zergx.svc.cluster.local
+ARG REGISTRY=jj-lab.temp.10.199.64.20.nip.io
 ARG RUST_IMAGE=1.97.1-alpine3.24
 ARG NODE_IMAGE=22-alpine
 
@@ -64,6 +64,6 @@ ENV JJLAB_PORT=8080 \
     JJLAB_LOGS=/data/logs \
     JJLAB_CI_NAMESPACE=temp \
     JJLAB_BUILDKIT_ADDR=tcp://buildkitd.temp.svc.cluster.local:1234 \
-    JJLAB_CI_IMAGE=artifact.zergx.svc.cluster.local/library/alpine:3
+    JJLAB_CI_IMAGE=jj-lab.temp.10.199.64.20.nip.io/library/alpine:3
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/jjlab"]
