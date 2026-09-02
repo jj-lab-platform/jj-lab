@@ -80,6 +80,8 @@ spec:
               value: {{ .Values.selfUrl | quote }}
             - name: JJLAB_OPS_NAMESPACES
               value: {{ .Values.opsNamespaces | quote }}
+            - name: DOCKER_CONFIG
+              value: /etc/jjlab-docker
           readinessProbe:
             httpGet:
               path: /api/v1/health
@@ -97,6 +99,9 @@ spec:
           volumeMounts:
             - name: data
               mountPath: {{ .Values.dataDir }}
+            - name: docker-config
+              mountPath: /etc/jjlab-docker
+              readOnly: true
       volumes:
         - name: data
           {{- if .Values.persistence.data }}
@@ -104,3 +109,7 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        - name: docker-config
+          secret:
+            secretName: jjlab-docker-config
+            optional: true

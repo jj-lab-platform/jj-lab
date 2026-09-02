@@ -67,7 +67,7 @@ registry:
   root: /data/pkglab
   # External base URL used for auth challenge realms + self URLs in protocol
   # responses (OCI token endpoint, cargo/pypi/npm self links, ...).
-  selfBase: "http://jj-lab.temp.svc.cluster.local"
+  selfBase: "https://jj-lab.temp.10.199.64.20.nip.io"
 
 # --- native CI ---
 ci:
