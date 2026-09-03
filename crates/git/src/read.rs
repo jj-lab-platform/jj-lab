@@ -851,7 +851,32 @@ pub async fn contents_entry(
         .get_commit(&id)
         .map_err(|e| RepoError::Other(e.to_string()))?;
     let bytes = read_blob(&commit, path).await?;
-    Ok(json_contents(path, &bytes, &id.hex()))
+    // GitHub contents semantics: `sha` is the file's BLOB object id (the
+    // optimistic-lock base for writes), NOT the commit id. The write path
+    // compares against this blob sha, so returning the commit id here would
+    // make every client-supplied base mismatch and 409 on a single-file write.
+    let blob_sha = file_blob_sha(&commit, path).await?;
+    Ok(json_contents(path, &bytes, &blob_sha))
+}
+
+/// Return the blob sha (file id hex) of the file at `path` in `commit`'s tree,
+/// or "" when the path is absent (GitHub contents semantics: a file's sha is
+/// the blob object id, used as the optimistic-lock base for writes).
+pub async fn file_blob_sha(commit: &Commit, path: &str) -> Result<String, RepoError> {
+    let repo_path = RepoPathBuf::from_internal_string(path)
+        .map_err(|e| RepoError::Other(format!("bad path {path:?}: {e}")))?;
+    let value = commit
+        .tree()
+        .path_value(&repo_path)
+        .await
+        .map_err(|e| RepoError::Other(format!("path_value {path:?}: {e}")))?;
+    let resolved = value.into_resolved();
+    match resolved {
+        Ok(Some(jj_lib::backend::TreeValue::File { id, .. })) => Ok(id.hex()),
+        Ok(Some(jj_lib::backend::TreeValue::Symlink(id))) => Ok(id.hex()),
+        Ok(_) => Ok(String::new()),
+        Err(_) => Ok(String::new()),
+    }
 }
 
 fn json_contents(path: &str, bytes: &[u8], sha: &str) -> serde_json::Value {
