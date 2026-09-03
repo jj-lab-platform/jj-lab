@@ -70,6 +70,10 @@ fn obj(pairs: &[(&str, serde_json::Value)]) -> serde_json::Value {
     serde_json::Value::Object(pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
 }
 
+fn array(items: &[serde_json::Value]) -> serde_json::Value {
+    serde_json::Value::Array(items.to_vec())
+}
+
 // ── basics ──
 
 #[tokio::test]
@@ -162,12 +166,13 @@ async fn repo_create_duplicate_conflict_then_write_read_delete_file() {
     let mut resp = app
         .json(
             "POST",
-            "/api/v1/repos/o/r/contents/hello.txt",
+            "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("content", "hi\n".into()), ("branch", "main".into()), ("message", "add".into())]),
+            obj(&[("branch", "main".into()), ("message", "add".into()),
+                ("actions", array(&[obj(&[("action", "update".into()), ("path", "hello.txt".into()), ("content", "hi\n".into())])]))]),
         )
         .await;
-    assert_eq!(TestApp::status(&mut resp).await, 201, "create file");
+    assert_eq!(TestApp::status(&mut resp).await, 200, "create file");
     let body = TestApp::body_json(&mut resp).await;
     let sha = body["sha"].as_str().unwrap().to_string();
     let change_id = body["change_id"].as_str().unwrap().to_string();
@@ -182,10 +187,11 @@ async fn repo_create_duplicate_conflict_then_write_read_delete_file() {
     // Update file → new change.
     let mut resp = app
         .json(
-            "PUT",
-            "/api/v1/repos/o/r/contents/hello.txt",
+            "POST",
+            "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("content", "hi v2\n".into()), ("branch", "main".into())]),
+            obj(&[("branch", "main".into()), ("message", "add".into()),
+                ("actions", array(&[obj(&[("action", "update".into()), ("path", "hello.txt".into()), ("content", "hi v2\n".into())])]))]),
         )
         .await;
     assert_eq!(TestApp::status(&mut resp).await, 200);
@@ -204,10 +210,11 @@ async fn repo_create_duplicate_conflict_then_write_read_delete_file() {
     // Delete file.
     let mut resp = app
         .json(
-            "DELETE",
-            "/api/v1/repos/o/r/contents/hello.txt",
+            "POST",
+            "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("branch", "main".into()), ("message", "rm".into())]),
+            obj(&[("branch", "main".into()), ("message", "rm".into()),
+                ("actions", array(&[obj(&[("action", "delete".into()), ("path", "hello.txt".into())])]))]),
         )
         .await;
     assert_eq!(TestApp::status(&mut resp).await, 200);
@@ -238,9 +245,10 @@ async fn release_lifecycle_with_assets() {
     let _ = app
         .json(
             "POST",
-            "/api/v1/repos/o/r/contents/bin.txt",
+            "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("content", "payload\n".into()), ("branch", "main".into())]),
+            obj(&[("branch", "main".into()), ("message", "add".into()),
+                ("actions", array(&[obj(&[("action", "update".into()), ("path", "bin.txt".into()), ("content", "payload\n".into())])]))]),
         )
         .await;
 
@@ -312,9 +320,10 @@ async fn mr_lifecycle_review_aggregation_and_head_reassociation() {
     let mut resp = app
         .json(
             "POST",
-            "/api/v1/repos/o/r/contents/f.txt",
+            "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("content", "v1\n".into()), ("branch", "main".into()), ("amend", false.into())]),
+            obj(&[("branch", "main".into()), ("message", "add".into()), ("amend", false.into()),
+                ("actions", array(&[obj(&[("action", "update".into()), ("path", "f.txt".into()), ("content", "v1\n".into())])]))]),
         )
         .await;
     let first = TestApp::body_json(&mut resp).await;
@@ -332,9 +341,10 @@ async fn mr_lifecycle_review_aggregation_and_head_reassociation() {
     let mut resp = app
         .json(
             "POST",
-            "/api/v1/repos/o/r/contents/f.txt",
+            "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("content", "v2\n".into()), ("branch", "feature".into()), ("amend", false.into())]),
+            obj(&[("branch", "feature".into()), ("message", "add".into()), ("amend", false.into()),
+                ("actions", array(&[obj(&[("action", "update".into()), ("path", "f.txt".into()), ("content", "v2\n".into())])]))]),
         )
         .await;
     let head = TestApp::body_json(&mut resp).await;
@@ -392,10 +402,11 @@ async fn mr_lifecycle_review_aggregation_and_head_reassociation() {
     // Force-push: rewrite feature tip.
     let _ = app
         .json(
-            "PUT",
-            "/api/v1/repos/o/r/contents/f.txt",
+            "POST",
+            "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("content", "v3\n".into()), ("branch", "feature".into()), ("message", "v3".into()), ("amend", false.into())]),
+            obj(&[("branch", "feature".into()), ("message", "v3".into()), ("amend", false.into()),
+                ("actions", array(&[obj(&[("action", "update".into()), ("path", "f.txt".into()), ("content", "v3\n".into())])]))]),
         )
         .await;
     // Projection runs inside the write; MR head must follow feature tip while
@@ -427,12 +438,10 @@ async fn actions_workflow_dispatch_runs_and_logs() {
     let _ = app
         .json(
             "POST",
-            "/api/v1/repos/o/r/contents/.github/workflows/ci.yml",
+            "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[
-                ("content", "name: CI\non: push\njobs:\n  build:\n    steps:\n      - run: echo from-actions\n".into()),
-                ("branch", "main".into()),
-            ]),
+            obj(&[("branch", "main".into()), ("message", "add".into()),
+                ("actions", array(&[obj(&[("action", "update".into()), ("path", ".github/workflows/ci.yml".into()), ("content", "name: CI\non: push\njobs:\n  build:\n    steps:\n      - run: echo from-actions\n".into())])]))]),
         )
         .await;
     // Write triggers on_push; workflow should be synced (registered).
@@ -475,9 +484,10 @@ async fn annotate_reports_origin_change_and_rebase_advances_dest() {
     let _ = app
         .json(
             "POST",
-            "/api/v1/repos/o/r/contents/u.txt",
+            "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("content", "x\n".into()), ("branch", "main".into())]),
+            obj(&[("branch", "main".into()), ("message", "add".into()),
+                ("actions", array(&[obj(&[("action", "update".into()), ("path", "u.txt".into()), ("content", "x\n".into())])]))]),
         )
         .await;
 
@@ -513,17 +523,19 @@ async fn seeded_app() -> TestApp {
     let _ = app
         .json(
             "POST",
-            "/api/v1/repos/o/r/contents/a.txt",
+            "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("content", "line1\n".into()), ("branch", "main".into()), ("amend", false.into())]),
+            obj(&[("branch", "main".into()), ("message", "add".into()), ("amend", false.into()),
+                ("actions", array(&[obj(&[("action", "update".into()), ("path", "a.txt".into()), ("content", "line1\n".into())])]))]),
         )
         .await;
     let _ = app
         .json(
-            "PUT",
-            "/api/v1/repos/o/r/contents/a.txt",
+            "POST",
+            "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("content", "line1\nline2\n".into()), ("branch", "main".into()), ("amend", false.into())]),
+            obj(&[("branch", "main".into()), ("message", "add".into()), ("amend", false.into()),
+                ("actions", array(&[obj(&[("action", "update".into()), ("path", "a.txt".into()), ("content", "line1\nline2\n".into())])]))]),
         )
         .await;
     app

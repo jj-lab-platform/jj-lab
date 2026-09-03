@@ -69,11 +69,14 @@ async fn repo_lifecycle_create_write_branch_tag_delete() {
         .is_err());
 
     // 2. Write a file → new change on main.
-    let out = jjlab_git::mutation::write_file(
-        &store, &db, "o", "r", "main", "docs/a.md", b"# hi\n", "add a", author(), false,
-    )
-    .await
-    .expect("write_file");
+    let write = |path: String, content: Vec<u8>| {
+        let s2 = store.clone(); let d2 = db.clone();
+        async move {
+            let edits = vec![jjlab_git::mutation::BatchEdit { path, content, base_sha: None }];
+            jjlab_git::mutation::commit_edits(&s2, &d2, "o", "r", "main", &edits, &[], "add", author(), false).await
+        }
+    };
+    let out = write("docs/a.md".to_string(), b"# hi\n".to_vec()).await.expect("commit_edits write");
     assert!(!out.sha.is_empty());
     assert_eq!(out.change_id.len(), 32);
 
@@ -85,11 +88,7 @@ async fn repo_lifecycle_create_write_branch_tag_delete() {
     assert_eq!(bytes, b"# hi\n");
 
     // 3. Update produces a *new* commit + change (amend=false).
-    let out2 = jjlab_git::mutation::write_file(
-        &store, &db, "o", "r", "main", "docs/a.md", b"# hi v2\n", "update a", author(), false,
-    )
-    .await
-    .unwrap();
+    let out2 = write("docs/a.md".to_string(), b"# hi v2\n".to_vec()).await.unwrap();
     assert_ne!(out.sha, out2.sha);
     assert_ne!(out.change_id, out2.change_id);
 
@@ -117,7 +116,8 @@ async fn repo_lifecycle_create_write_branch_tag_delete() {
     assert!(jjlab_git::read::tags(&store, "o", "r").await.unwrap().is_empty());
 
     // 6. Delete file → change; content 404s after.
-    jjlab_git::mutation::delete_file(&store, &db, "o", "r", "main", "docs/a.md", "rm", author(), false)
+    let dels = vec![jjlab_git::mutation::BatchDelete { path: "docs/a.md".to_string(), base_sha: None }];
+    jjlab_git::mutation::commit_edits(&store, &db, "o", "r", "main", &[], &dels, "rm", author(), false)
         .await
         .unwrap();
     let tip = jjlab_git::read::head_sha(&store, "o", "r").await.unwrap();
@@ -137,10 +137,9 @@ async fn write_file_to_missing_branch_fails() {
     jjlab_git::mutation::create_repo(&store, &db, "o", "r", "main", author())
         .await
         .unwrap();
-    let err = jjlab_git::mutation::write_file(
-        &store, &db, "o", "r", "nope", "f.txt", b"x", "m", author(), false,
-    )
-    .await;
+    let edits = vec![jjlab_git::mutation::BatchEdit { path: "f.txt".to_string(), content: b"x".to_vec(), base_sha: None }];
+    let err = jjlab_git::mutation::commit_edits(&store, &db, "o", "r", "nope", &edits, &[], "m", author(), false)
+        .await;
     assert!(err.is_err(), "writing to a non-existent branch must fail");
 }
 
@@ -151,18 +150,18 @@ async fn write_file_with_amend_keeps_change_id() {
     jjlab_git::mutation::create_repo(&store, &db, "o", "r", "main", author())
         .await
         .unwrap();
-    let first = jjlab_git::mutation::write_file(
-        &store, &db, "o", "r", "main", "f.txt", b"v1\n", "m1", author(), false,
-    )
-    .await
-    .unwrap();
+    let first = jjlab_git::mutation::commit_edits(
+        &store, &db, "o", "r", "main",
+        &vec![jjlab_git::mutation::BatchEdit { path: "f.txt".to_string(), content: b"v1\n".to_vec(), base_sha: None }],
+        &[], "m1", author(), false,
+    ).await.unwrap();
     // Amend the head change with new content: change-id must survive, and the
     // head commit must be *rewritten* (not extended with a same-id child).
-    let amended = jjlab_git::mutation::write_file(
-        &store, &db, "o", "r", "main", "f.txt", b"v2\n", "m2", author(), true,
-    )
-    .await
-    .unwrap();
+    let amended = jjlab_git::mutation::commit_edits(
+        &store, &db, "o", "r", "main",
+        &vec![jjlab_git::mutation::BatchEdit { path: "f.txt".to_string(), content: b"v2\n".to_vec(), base_sha: None }],
+        &[], "m2", author(), true,
+    ).await.unwrap();
     assert_eq!(
         first.change_id, amended.change_id,
         "amend must keep the stable change-id"
@@ -177,16 +176,16 @@ async fn amend_rewrites_head_not_extends() {
     jjlab_git::mutation::create_repo(&store, &db, "o", "r", "main", author())
         .await
         .unwrap();
-    let first = jjlab_git::mutation::write_file(
-        &store, &db, "o", "r", "main", "f.txt", b"v1\n", "m1", author(), false,
-    )
-    .await
-    .unwrap();
-    let amended = jjlab_git::mutation::write_file(
-        &store, &db, "o", "r", "main", "f.txt", b"v2\n", "m2", author(), true,
-    )
-    .await
-    .unwrap();
+    let first = jjlab_git::mutation::commit_edits(
+        &store, &db, "o", "r", "main",
+        &vec![jjlab_git::mutation::BatchEdit { path: "f.txt".to_string(), content: b"v1\n".to_vec(), base_sha: None }],
+        &[], "m1", author(), false,
+    ).await.unwrap();
+    let amended = jjlab_git::mutation::commit_edits(
+        &store, &db, "o", "r", "main",
+        &vec![jjlab_git::mutation::BatchEdit { path: "f.txt".to_string(), content: b"v2\n".to_vec(), base_sha: None }],
+        &[], "m2", author(), true,
+    ).await.unwrap();
     // The rewritten head must keep the ORIGINAL parent (not the old head).
     let repo = jjlab_git::read::open(&store, "o", "r").await.unwrap();
     let id = jjlab_git::read::resolve_snapshot(&repo, "main").unwrap();
@@ -209,11 +208,11 @@ async fn amend_on_root_falls_back_to_new_change() {
         .unwrap();
     // The only commit on a fresh repo is the init commit; its parent is the
     // root commit, so amend must degrade to a new change without panicking.
-    let out = jjlab_git::mutation::write_file(
-        &store, &db, "o", "r", "main", "f.txt", b"v1\n", "m1", author(), true,
-    )
-    .await
-    .unwrap();
+    let out = jjlab_git::mutation::commit_edits(
+        &store, &db, "o", "r", "main",
+        &vec![jjlab_git::mutation::BatchEdit { path: "f.txt".to_string(), content: b"v1\n".to_vec(), base_sha: None }],
+        &[], "m1", author(), true,
+    ).await.unwrap();
     assert_eq!(out.change_id.len(), 32);
 }
 
@@ -260,11 +259,11 @@ async fn force_push_reassociates_open_mr_head() {
     let branches = jjlab_git::read::branches(&store, "o", "r").await.unwrap();
     let base_name = branches.first().unwrap().name.clone();
     let base_sha = branches.first().unwrap().sha.clone();
-    let first = jjlab_git::mutation::write_file(
-        &store, &db, "o", "r", &base_name, "f.txt", b"v1\n", "one", author(), false,
-    )
-    .await
-    .unwrap();
+    let first = jjlab_git::mutation::commit_edits(
+        &store, &db, "o", "r", &base_name,
+        &vec![jjlab_git::mutation::BatchEdit { path: "f.txt".to_string(), content: b"v1\n".to_vec(), base_sha: None }],
+        &[], "one", author(), false,
+    ).await.unwrap();
     assert_ne!(first.sha, base_sha, "write must advance the base branch");
     jjlab_git::mutation::set_branch(&store, &db, "o", "r", "feature", &first.sha, "")
         .await
@@ -280,11 +279,11 @@ async fn force_push_reassociates_open_mr_head() {
 
     // Force-push: rewrite the tip (new change-id, same branch name) — the
     // plain-git case where no change-id header survives.
-    let second = jjlab_git::mutation::write_file(
-        &store, &db, "o", "r", "feature", "f.txt", b"v2\n", "two", author(), false,
-    )
-    .await
-    .unwrap();
+    let second = jjlab_git::mutation::commit_edits(
+        &store, &db, "o", "r", "feature",
+        &vec![jjlab_git::mutation::BatchEdit { path: "f.txt".to_string(), content: b"v2\n".to_vec(), base_sha: None }],
+        &[], "two", author(), false,
+    ).await.unwrap();
     let _ = base_sha;
 
     // Re-run projection: MR head must follow the branch tip.

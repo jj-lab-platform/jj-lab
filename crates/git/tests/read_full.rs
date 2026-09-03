@@ -286,9 +286,10 @@ async fn read_blob_directory_and_missing_paths_error() {
     jjlab_git::mutation::create_repo(&store, &db, "o", "r", "main", ("a".into(), "a@a".into()))
         .await
         .unwrap();
-    jjlab_git::mutation::write_file(
-        &store, &db, "o", "r", "main", "nested/dir/file.txt", b"x\n", "nested",
-        ("a".into(), "a@a".into()), false,
+    jjlab_git::mutation::commit_edits(
+        &store, &db, "o", "r", "main",
+        &vec![jjlab_git::mutation::BatchEdit { path: "nested/dir/file.txt".to_string(), content: b"x\n".to_vec(), base_sha: None }],
+        &[], "nested", ("a".into(), "a@a".into()), false,
     )
     .await
     .unwrap();

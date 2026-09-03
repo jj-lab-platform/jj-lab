@@ -50,10 +50,7 @@ pub async fn commits(State(state): State<AppState>, Path((org, repo)): Path<(Str
     let mut edits: Vec<jjlab_git::mutation::BatchEdit> = Vec::new();
     let mut deletes: Vec<jjlab_git::mutation::BatchDelete> = Vec::new();
     for a in &body.actions {
-        use base64::Engine as _;
-        let content = base64::engine::general_purpose::STANDARD
-            .decode(&a.content_base64)
-            .unwrap_or_default();
+        let content = decode_action_content(a);
         let base_sha = if a.sha.is_empty() { None } else { Some(a.sha.clone()) };
         match a.action.as_str() {
             "delete" => deletes.push(jjlab_git::mutation::BatchDelete { path: a.path.clone(), base_sha }),
@@ -64,41 +61,22 @@ pub async fn commits(State(state): State<AppState>, Path((org, repo)): Path<(Str
         return json_err(StatusCode::BAD_REQUEST, "no actions".into());
     }
 
-    // Writes and deletes each run in their own atomic transaction; apply them
-    // in order. Each closure gets its OWN clone of the captured state.
-    let mut outcome: Option<jjlab_git::mutation::EditOutcome> = None;
-    if !edits.is_empty() {
-        let s2 = store.clone(); let d2 = db.clone();
-        let o2 = org.clone(); let r2 = repo.clone(); let b2 = branch.clone();
-        let m2 = message.clone(); let a2 = author.clone();
-        let e = match run_jj(move || {
-            pollster::block_on(jjlab_git::mutation::write_files(
-                &s2, &d2, &o2, &r2, &b2, &edits, &m2, a2, amend,
-            ))
-        })
-        .await {
-            Ok(o) => o,
-            Err(resp) => return resp,
-        };
-        outcome = Some(e);
-    }
-    if !deletes.is_empty() {
-        let s2 = store.clone(); let d2 = db.clone();
-        let o2 = org.clone(); let r2 = repo.clone(); let b2 = branch.clone();
-        let m2 = message.clone(); let a2 = author.clone();
-        let e = match run_jj(move || {
-            pollster::block_on(jjlab_git::mutation::delete_files(
-                &s2, &d2, &o2, &r2, &b2, &deletes, &m2, a2, amend,
-            ))
-        })
-        .await {
-            Ok(o) => o,
-            Err(resp) => return resp,
-        };
-        outcome = Some(e);
-    }
-    let o = outcome.unwrap();
-    Json(json!({ "sha": o.sha, "change_id": o.change_id })).into_response()
+    // Apply all actions as ONE atomic commit (single change id): writes and
+    // deletes are combined into one MergedTreeBuilder. Either all land or, on
+    // any sha/base conflict, nothing is written (409).
+    let s2 = store.clone(); let d2 = db.clone();
+    let o2 = org.clone(); let r2 = repo.clone(); let b2 = branch.clone();
+    let m2 = message.clone(); let a2 = author.clone();
+    let e = match run_jj(move || {
+        pollster::block_on(jjlab_git::mutation::commit_edits(
+            &s2, &d2, &o2, &r2, &b2, &edits, &deletes, &m2, a2, amend,
+        ))
+    })
+    .await {
+        Ok(o) => o,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "sha": e.sha, "change_id": e.change_id })).into_response()
 }
 
 pub async fn create_repo(
@@ -280,6 +258,16 @@ pub async fn delete_tag_handler(
     }
 }
 
+/// Decode an action's content. Accepts base64 (`content_base64`) or plain text
+/// (`content`) — the GitLab commits API accepts raw content, so both work.
+fn decode_action_content(a: &CommitAction) -> Vec<u8> {
+    if !a.content_base64.is_empty() {
+        use base64::Engine as _;
+        return base64::engine::general_purpose::STANDARD.decode(&a.content_base64).unwrap_or_default();
+    }
+    a.content.clone().into_bytes()
+}
+
 /// One commit action (GitLab Repository Commits API style).
 #[derive(serde::Deserialize)]
 pub struct CommitAction {
@@ -287,6 +275,8 @@ pub struct CommitAction {
     pub path: String,
     #[serde(default)]
     pub content_base64: String,
+    #[serde(default)]
+    pub content: String,
     #[serde(default)]
     pub sha: String,
 }

@@ -386,32 +386,29 @@ pub struct EditOutcome {
     pub change_id: String,
 }
 
-/// Write (create/update) a file at `path` on top of `branch`'s head.
-///
-/// `amend` selects the change semantics:
-///   - `amend = true` (default): rewrite the branch's head change (jj-native
-///     amend), keeping its change-id stable. The head commit is *rewritten*
-///     (its predecessor is recorded, so the change stays a single commit in
-///     visible history) rather than extended with a same-change-id child.
-///   - `amend = false`: create a fresh change on top of the head.
-///
-/// Amend only ever targets the head: a change becomes immutable once it is no
-/// longer the branch tip.
+/// Atomically apply a mixed set of create/update/delete actions as ONE change
+/// on top of `branch`'s head (the unified write path, GitLab commits style).
+/// Every action's base blob sha is validated up front; a mismatch on ANY
+/// action rejects the WHOLE commit (409) before anything is written. Writes
+/// and deletions are combined into a single `MergedTreeBuilder` → one commit →
+/// one change id. Either all succeed or nothing is written (atomic).
 #[allow(clippy::too_many_arguments)]
-pub async fn write_file(
+pub async fn commit_edits(
     store: &Arc<RepoStore>,
     db: &Db,
     org: &str,
     repo: &str,
     branch: &str,
-    path: &str,
-    mut content: &[u8],
+    writes: &[BatchEdit],
+    deletes: &[BatchDelete],
     message: &str,
     author: (String, String),
     amend: bool,
-    base_sha: Option<&str>,
 ) -> Result<EditOutcome, RepoError> {
     jjlab_core::validate_ref_name(branch, "branch").map_err(RepoError::Invalid)?;
+    if writes.is_empty() && deletes.is_empty() {
+        return Err(RepoError::Invalid("commit contains no actions".into()));
+    }
     let handle = store.open(org, repo).await?;
     let signature = jj_lib::backend::Signature {
         name: author.0,
@@ -426,150 +423,48 @@ pub async fn write_file(
         let outcome = {
             let mut_repo = tx.repo_mut();
             let store_ = mut_repo.store().clone();
-
-            // Optimistic-lock: reject a stale edit whose base blob sha no
-            // longer matches the file's current blob sha (concurrent change).
             let parent = mut_repo
                 .store()
                 .get_commit(&base)
                 .map_err(|e| RepoError::Other(e.to_string()))?;
-            let current = file_blob_sha(&parent, path).await?;
-            assert_blob_base(current, base_sha)?;
 
-            // Start from the head's merged tree and set the single path. Using
-            // MergedTreeBuilder (not a resolved TreeBuilder) means any other
-            // first-class conflicts in the head tree survive: writing a file's
-            // content is exactly how a conflict at `path` gets resolved, while
-            // unrelated conflicts stay conflicted.
-            let file_id = store_
-                .write_file(&RepoPathBuf::root(), &mut content)
-                .await
-                .map_err(|e| RepoError::Other(format!("write file: {e}")))?;
-            let repo_path = RepoPathBuf::from_internal_string(path)
-                .map_err(|e| RepoError::Other(format!("bad path {path:?}: {e}")))?;
-            let mut builder = MergedTreeBuilder::new(parent.tree());
-            builder.set_or_remove(
-                repo_path,
-                Merge::normal(TreeValue::File {
-                    id: file_id,
-                    executable: false,
-                    copy_id: CopyId::placeholder(),
-                }),
-            );
-            let merged = builder
-                .write_tree()
-                .await
-                .map_err(|e| RepoError::Other(format!("write tree: {e}")))?;
-
-            // Amend = rewrite the head commit (change stays immutable: one
-            // commit per change in visible history). A root/empty head has no
-            // predecessor to rewrite, so fall back to a fresh change.
-            let can_amend = amend && base != mut_repo.store().root_commit_id().clone();
-            let commit = if can_amend {
-                let mut builder = mut_repo.rewrite_commit(&parent);
-                builder = builder
-                    .set_tree(merged)
-                    .set_description(message.to_string());
-                let commit = builder
-                    .write()
-                    .await
-                    .map_err(|e| RepoError::Other(format!("rewrite commit: {e}")))?;
-                // rebase_descendants rewrites any descendants of the old head
-                // and moves bookmarks pointing at it onto the new commit.
-                mut_repo
-                    .rebase_descendants()
-                    .await
-                    .map_err(|e| RepoError::Other(format!("rebase descendants: {e}")))?;
-                commit
-            } else {
-                let mut builder = mut_repo.new_commit(vec![base.clone()], merged);
-                builder = builder
-                    .set_description(message.to_string())
-                    .set_author(signature.clone())
-                    .set_committer(signature.clone());
-                let commit = builder
-                    .write()
-                    .await
-                    .map_err(|e| RepoError::Other(format!("write commit: {e}")))?;
-                let target: jj_lib::ref_name::RefNameBuf = branch.to_string().into();
-                mut_repo.set_local_bookmark_target(
-                    &target,
-                    jj_lib::op_store::RefTarget::normal(commit.id().clone()),
-                );
-                commit
-            };
-
-            EditOutcome {
-                sha: commit.id().hex(),
-                change_id: commit.change_id().reverse_hex(),
+            // Validate every base sha BEFORE mutating anything: a mismatch on
+            // any action rejects the whole commit (atomic, no partial write).
+            for edit in writes {
+                let current = file_blob_sha(&parent, &edit.path).await?;
+                assert_blob_base(current, edit.base_sha.as_deref())?;
             }
-        };
-        tx.commit("jjlab: write file")
-            .await
-            .map_err(|e| RepoError::Other(e.to_string()))?;
-        Ok::<EditOutcome, RepoError>(outcome)
-    })?;
+            for del in deletes {
+                let current = file_blob_sha(&parent, &del.path).await?;
+                assert_blob_base(current, del.base_sha.as_deref())?;
+            }
 
-    project::project_repo(store, db, org, repo).await?;
-    // Writing a workflow file syncs it and (per push semantics) enqueues runs.
-    if path.starts_with(".github/workflows/") || path == ".jjlab-ci.yml" {
-        let logs_root = std::path::PathBuf::from(
-            std::env::var("JJLAB_LOGS").unwrap_or_else(|_| "/data/logs".to_string()),
-        );
-        if let Err(e) =
-            crate::actions::on_push(store, db, org, repo, &outcome.sha, &logs_root).await
-        {
-            tracing::warn!(org, repo, err = %e, "actions on_push after workflow write failed");
-        }
-    }
-    Ok(outcome)
-}
-
-/// Delete a file at `path` on top of `branch`. `amend` selects whether to
-/// rewrite the branch's head change (`true`, stable change-id) or create a
-/// fresh change (`false`). Amend only ever targets the head.
-#[allow(clippy::too_many_arguments)]
-pub async fn delete_file(
-    store: &Arc<RepoStore>,
-    db: &Db,
-    org: &str,
-    repo: &str,
-    branch: &str,
-    path: &str,
-    message: &str,
-    author: (String, String),
-    amend: bool,
-    base_sha: Option<&str>,
-) -> Result<EditOutcome, RepoError> {
-    jjlab_core::validate_ref_name(branch, "branch").map_err(RepoError::Invalid)?;
-    let handle = store.open(org, repo).await?;
-    let signature = jj_lib::backend::Signature {
-        name: author.0,
-        email: author.1,
-        timestamp: jj_lib::backend::Timestamp::now(),
-    };
-    let repo_arc = handle.repo.clone();
-    let base = pollster::block_on(async { crate::read::resolve_snapshot(&repo_arc, branch) })?;
-
-    let outcome = pollster::block_on(async {
-        let mut tx = handle.repo.start_transaction();
-        let outcome = {
-            let mut_repo = tx.repo_mut();
-            let parent = mut_repo
-                .store()
-                .get_commit(&base)
-                .map_err(|e| RepoError::Other(e.to_string()))?;
-
-            // Optimistic-lock: a delete must target the file the client read.
-            let current = file_blob_sha(&parent, path).await?;
-            assert_blob_base(current, base_sha)?;
-
-            let repo_path = RepoPathBuf::from_internal_string(path)
-                .map_err(|e| RepoError::Other(format!("bad path {path:?}: {e}")))?;
-            // Remove the path from the head's merged tree, preserving any other
-            // first-class conflicts (deleting a file resolves only its conflict).
             let mut builder = MergedTreeBuilder::new(parent.tree());
-            builder.set_or_remove(repo_path, Merge::absent());
+            for edit in writes {
+                let repo_path = RepoPathBuf::from_internal_string(&edit.path)
+                    .map_err(|e| RepoError::Other(format!("bad path {:?}: {e}", edit.path)))?;
+                if edit.content.is_empty() {
+                    builder.set_or_remove(repo_path, Merge::absent());
+                    continue;
+                }
+                let file_id = store_
+                    .write_file(&RepoPathBuf::root(), &mut futures_util::io::Cursor::new(edit.content.clone()))
+                    .await
+                    .map_err(|e| RepoError::Other(format!("write file {}: {e}", edit.path)))?;
+                builder.set_or_remove(
+                    repo_path,
+                    Merge::normal(TreeValue::File {
+                        id: file_id,
+                        executable: false,
+                        copy_id: CopyId::placeholder(),
+                    }),
+                );
+            }
+            for del in deletes {
+                let repo_path = RepoPathBuf::from_internal_string(&del.path)
+                    .map_err(|e| RepoError::Other(format!("bad path {:?}: {e}", del.path)))?;
+                builder.set_or_remove(repo_path, Merge::absent());
+            }
             let merged = builder
                 .write_tree()
                 .await
@@ -577,11 +472,9 @@ pub async fn delete_file(
 
             let can_amend = amend && base != mut_repo.store().root_commit_id().clone();
             let commit = if can_amend {
-                let mut builder = mut_repo.rewrite_commit(&parent);
-                builder = builder
-                    .set_tree(merged)
-                    .set_description(message.to_string());
-                let commit = builder
+                let mut b = mut_repo.rewrite_commit(&parent);
+                b = b.set_tree(merged).set_description(message.to_string());
+                let commit = b
                     .write()
                     .await
                     .map_err(|e| RepoError::Other(format!("rewrite commit: {e}")))?;
@@ -612,14 +505,31 @@ pub async fn delete_file(
                 change_id: commit.change_id().reverse_hex(),
             }
         };
-        tx.commit("jjlab: delete file")
+        tx.commit("jjlab: commit edits")
             .await
             .map_err(|e| RepoError::Other(e.to_string()))?;
         Ok::<EditOutcome, RepoError>(outcome)
     })?;
 
     project::project_repo(store, db, org, repo).await?;
+    // Writing a workflow file syncs it and (per push semantics) enqueues runs.
+    if hasWorkflowWrite(writes) {
+        let logs_root = std::path::PathBuf::from(
+            std::env::var("JJLAB_LOGS").unwrap_or_else(|_| "/data/logs".to_string()),
+        );
+        if let Err(e) = crate::actions::on_push(store, db, org, repo, &outcome.sha, &logs_root).await {
+            tracing::warn!(org, repo, err = %e, "actions on_push after workflow commit failed");
+        }
+    }
     Ok(outcome)
+}
+
+// hasWorkflowWrite reports whether any write action targets a workflow file
+// (which, per push semantics, triggers a CI run after the change).
+fn hasWorkflowWrite(writes: &[BatchEdit]) -> bool {
+    writes.iter().any(|e| {
+        e.path.starts_with(".github/workflows/") || e.path == ".jjlab-ci.yml"
+    })
 }
 
 /// Atomically write (create/update) several files as one change on top of
