@@ -29,47 +29,76 @@ pub async fn rebase_handler(
     Json(json!({ "rebase": outcome })).into_response()
 }
 
-/// `POST /repos/{org}/{repo}/contents/batch` — atomically write several files
-/// as one change. Each edit carries the content and an optional optimistic-lock
-/// base blob sha; a mismatch on ANY file rejects the WHOLE batch (409), so no
-/// partial write occurs. On success a single change id is returned.
-pub async fn batch_write(State(state): State<AppState>, Path((org, repo)): Path<(String, String)>, Json(body): Json<BatchBody>) -> Response {
+/// `POST /repos/{org}/{repo}/commits` — atomic commit carrying one or more
+/// file actions (create/update/delete), GitLab Repository Commits API style.
+/// Each action may carry an optimistic-lock base blob `sha`; a mismatch on any
+/// action rejects the WHOLE commit (409) and nothing is written. On success a
+/// single change id is returned.
+pub async fn commits(State(state): State<AppState>, Path((org, repo)): Path<(String, String)>, Json(body): Json<CommitsBody>) -> Response {
     let store = state.store.clone();
     let db = state.db.clone();
     let author = server_author();
     let branch = body.branch.clone();
     let message = if body.message.is_empty() {
-        "batch update".to_string()
+        "commit".to_string()
     } else {
         body.message.clone()
     };
     let amend = body.amend;
-    let edits: Vec<jjlab_git::mutation::BatchEdit> = body
-        .files
-        .iter()
-        .map(|f| {
-            use base64::Engine as _;
-            let content = base64::engine::general_purpose::STANDARD
-                .decode(&f.content_base64)
-                .unwrap_or_default();
-            jjlab_git::mutation::BatchEdit {
-                path: f.path.clone(),
-                content,
-                base_sha: if f.sha.is_empty() { None } else { Some(f.sha.clone()) },
-            }
+
+    // Split actions into writes (create/update) and deletes (delete).
+    let mut edits: Vec<jjlab_git::mutation::BatchEdit> = Vec::new();
+    let mut deletes: Vec<jjlab_git::mutation::BatchDelete> = Vec::new();
+    for a in &body.actions {
+        use base64::Engine as _;
+        let content = base64::engine::general_purpose::STANDARD
+            .decode(&a.content_base64)
+            .unwrap_or_default();
+        let base_sha = if a.sha.is_empty() { None } else { Some(a.sha.clone()) };
+        match a.action.as_str() {
+            "delete" => deletes.push(jjlab_git::mutation::BatchDelete { path: a.path.clone(), base_sha }),
+            _ => edits.push(jjlab_git::mutation::BatchEdit { path: a.path.clone(), content, base_sha }),
+        }
+    }
+    if edits.is_empty() && deletes.is_empty() {
+        return json_err(StatusCode::BAD_REQUEST, "no actions".into());
+    }
+
+    // Writes and deletes each run in their own atomic transaction; apply them
+    // in order. Each closure gets its OWN clone of the captured state.
+    let mut outcome: Option<jjlab_git::mutation::EditOutcome> = None;
+    if !edits.is_empty() {
+        let s2 = store.clone(); let d2 = db.clone();
+        let o2 = org.clone(); let r2 = repo.clone(); let b2 = branch.clone();
+        let m2 = message.clone(); let a2 = author.clone();
+        let e = match run_jj(move || {
+            pollster::block_on(jjlab_git::mutation::write_files(
+                &s2, &d2, &o2, &r2, &b2, &edits, &m2, a2, amend,
+            ))
         })
-        .collect();
-    let outcome = match run_jj(move || {
-        pollster::block_on(jjlab_git::mutation::write_files(
-            &store, &db, &org, &repo, &branch, &edits, &message, author, amend,
-        ))
-    })
-    .await
-    {
-        Ok(o) => o,
-        Err(resp) => return resp,
-    };
-    Json(json!({ "sha": outcome.sha, "change_id": outcome.change_id })).into_response()
+        .await {
+            Ok(o) => o,
+            Err(resp) => return resp,
+        };
+        outcome = Some(e);
+    }
+    if !deletes.is_empty() {
+        let s2 = store.clone(); let d2 = db.clone();
+        let o2 = org.clone(); let r2 = repo.clone(); let b2 = branch.clone();
+        let m2 = message.clone(); let a2 = author.clone();
+        let e = match run_jj(move || {
+            pollster::block_on(jjlab_git::mutation::delete_files(
+                &s2, &d2, &o2, &r2, &b2, &deletes, &m2, a2, amend,
+            ))
+        })
+        .await {
+            Ok(o) => o,
+            Err(resp) => return resp,
+        };
+        outcome = Some(e);
+    }
+    let o = outcome.unwrap();
+    Json(json!({ "sha": o.sha, "change_id": o.change_id })).into_response()
 }
 
 pub async fn create_repo(
@@ -251,101 +280,25 @@ pub async fn delete_tag_handler(
     }
 }
 
-pub async fn create_file(
-    State(state): State<AppState>,
-    Path((org, repo, path)): Path<(String, String, String)>,
-    Json(body): Json<FileBody>,
-) -> Response {
-    let content = match file_content(&body) {
-        Ok(c) => c,
-        Err(e) => return json_err(StatusCode::BAD_REQUEST, e),
-    };
-    let message = if body.message.is_empty() {
-        format!("add {path}")
-    } else {
-        body.message.clone()
-    };
-    let store = state.store.clone();
-    let db = state.db.clone();
-    let author = server_author();
-    let branch = body.branch.clone();
-    let amend = body.amend;
-    let base_sha = if body.sha.is_empty() { None } else { Some(body.sha.clone()) };
-    let outcome = match run_jj(move || {
-        pollster::block_on(jjlab_git::mutation::write_file(
-            &store, &db, &org, &repo, &branch, &path, &content, &message, author, amend, base_sha.as_deref(),
-        ))
-    })
-    .await
-    {
-        Ok(o) => o,
-        Err(resp) => return resp,
-    };
-    (
-        StatusCode::CREATED,
-        Json(json!({ "sha": outcome.sha, "change_id": outcome.change_id })),
-    )
-        .into_response()
+/// One commit action (GitLab Repository Commits API style).
+#[derive(serde::Deserialize)]
+pub struct CommitAction {
+    pub action: String, // create | update | delete
+    pub path: String,
+    #[serde(default)]
+    pub content_base64: String,
+    #[serde(default)]
+    pub sha: String,
 }
 
-pub async fn update_file(
-    State(state): State<AppState>,
-    Path((org, repo, path)): Path<(String, String, String)>,
-    Json(body): Json<FileBody>,
-) -> Response {
-    let content = match file_content(&body) {
-        Ok(c) => c,
-        Err(e) => return json_err(StatusCode::BAD_REQUEST, e),
-    };
-    let message = if body.message.is_empty() {
-        format!("update {path}")
-    } else {
-        body.message.clone()
-    };
-    let store = state.store.clone();
-    let db = state.db.clone();
-    let author = server_author();
-    let branch = body.branch.clone();
-    let amend = body.amend;
-    let base_sha = if body.sha.is_empty() { None } else { Some(body.sha.clone()) };
-    let outcome = match run_jj(move || {
-        pollster::block_on(jjlab_git::mutation::write_file(
-            &store, &db, &org, &repo, &branch, &path, &content, &message, author, amend, base_sha.as_deref(),
-        ))
-    })
-    .await
-    {
-        Ok(o) => o,
-        Err(resp) => return resp,
-    };
-    Json(json!({ "sha": outcome.sha, "change_id": outcome.change_id })).into_response()
-}
-
-pub async fn delete_file_handler(
-    State(state): State<AppState>,
-    Path((org, repo, path)): Path<(String, String, String)>,
-    Json(body): Json<FileBody>,
-) -> Response {
-    let message = if body.message.is_empty() {
-        format!("delete {path}")
-    } else {
-        body.message.clone()
-    };
-    let store = state.store.clone();
-    let db = state.db.clone();
-    let author = server_author();
-    let branch = body.branch.clone();
-    let amend = body.amend;
-    let base_sha = if body.sha.is_empty() { None } else { Some(body.sha.clone()) };
-    let outcome = match run_jj(move || {
-        pollster::block_on(jjlab_git::mutation::delete_file(
-            &store, &db, &org, &repo, &branch, &path, &message, author, amend, base_sha.as_deref(),
-        ))
-    })
-    .await
-    {
-        Ok(o) => o,
-        Err(resp) => return resp,
-    };
-    Json(json!({ "sha": outcome.sha, "change_id": outcome.change_id })).into_response()
+/// Request body for `POST /repos/{org}/{repo}/commits`.
+#[derive(serde::Deserialize)]
+pub struct CommitsBody {
+    #[serde(default = "default_branch")]
+    pub branch: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default = "default_amend")]
+    pub amend: bool,
+    pub actions: Vec<CommitAction>,
 }

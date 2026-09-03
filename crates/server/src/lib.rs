@@ -114,65 +114,9 @@ pub struct TagBody {
     change: String,
 }
 
-#[derive(Deserialize)]
-pub struct FileBody {
-    /// Base64-encoded content (Gitea-compatible).
-    #[serde(default)]
-    content_base64: String,
-    /// Plain-text content shortcut.
-    #[serde(default)]
-    content: String,
-    #[serde(default = "default_branch")]
-    branch: String,
-    #[serde(default)]
-    message: String,
-    /// Rewrite the branch head's change (stable change-id) instead of creating
-    /// a fresh change. Defaults to `true` (jj-native amend semantics).
-    #[serde(default = "default_amend")]
-    amend: bool,
-    /// Optional optimistic-lock base: the blob sha the client read ("GitHub
-    /// contents" semantics). When present and the current file blob sha
-    /// differs, the write is rejected with a 409 Conflict.
-    #[serde(default)]
-    sha: String,
-}
-
-/// One file edit in an atomic batch request body.
-#[derive(serde::Deserialize)]
-pub struct BatchFile {
-    pub path: String,
-    pub content_base64: String,
-    #[serde(default)]
-    pub sha: String,
-}
-
-/// Request body for `POST /repos/{org}/{repo}/contents/batch`: several single
-/// file edits applied together in one atomic change.
-#[derive(serde::Deserialize)]
-pub struct BatchBody {
-    #[serde(default = "default_branch")]
-    pub branch: String,
-    #[serde(default)]
-    pub message: String,
-    #[serde(default = "default_amend")]
-    pub amend: bool,
-    pub files: Vec<BatchFile>,
-}
-
 pub 
 fn default_amend() -> bool {
     true
-}
-
-pub 
-fn file_content(body: &FileBody) -> Result<Vec<u8>, String> {
-    if !body.content_base64.is_empty() {
-        use base64::Engine as _;
-        return base64::engine::general_purpose::STANDARD
-            .decode(&body.content_base64)
-            .map_err(|e| format!("bad base64: {e}"));
-    }
-    Ok(body.content.clone().into_bytes())
 }
 
 #[derive(Deserialize)]
@@ -557,15 +501,12 @@ use axum::routing::put as put_route;
                 "/api/v1/repos/{org}/{repo}/tags/{name}",
                 post(set_tag_handler).delete(delete_tag_handler),
             )
-            .route(
-                "/api/v1/repos/{org}/{repo}/contents/{*path}",
-                post(create_file).put(update_file).delete(delete_file_handler),
-            )
-            .route(
-                "/api/v1/repos/{org}/{repo}/contents/batch",
-                post(batch_write),
-            )
             .route("/api/v1/repos/{org}/{repo}/rebase", post(rebase_handler))
+            // Atomic multi-action commit (GitLab Repository Commits style).
+            .route(
+                "/api/v1/repos/{org}/{repo}/commits",
+                post(commits),
+            )
             // Extended read surface (E), Gitea-aligned.
             .route("/api/v1/repos/{org}/{repo}/commits", get(commit_log_handler))
             .route(

@@ -39,10 +39,11 @@ async fn file_blob_sha(commit: &jj_lib::commit::Commit, path: &str) -> Result<Op
 }
 
 /// Enforce the optimistic-lock base for a single file edit. `base_sha` is the
-/// file's blob sha the client read earlier. When the target path already
-/// exists and `base_sha` is Some but differs from the current blob sha, this
-/// rejects with a 409-style Conflict so a stale edit is refused rather than
-/// silently overwriting a concurrent change.
+/// file's blob sha the client read earlier. When `base_sha` is Some and
+/// non-empty but the current file state does not equal it exactly (whether the
+/// file was concurrently modified OR is now absent), this rejects with a
+/// 409-style Conflict — a stale edit is refused, never silently overwritten or
+/// turned into a blind create.
 fn assert_blob_base(
     current: Option<String>,
     base_sha: Option<&str>,
@@ -51,12 +52,11 @@ fn assert_blob_base(
         if base.is_empty() {
             return Ok(());
         }
-        if let Some(cur) = current {
-            if cur != base {
-                return Err(RepoError::Conflict(format!(
-                    "file blob changed concurrently (base {base}, current {cur})"
-                )));
-            }
+        if current.as_deref() != Some(base) {
+            return Err(RepoError::Conflict(format!(
+                "file blob changed concurrently (base {base}, current {:?})",
+                current
+            )));
         }
     }
     Ok(())
@@ -66,6 +66,12 @@ fn assert_blob_base(
 pub struct BatchEdit {
     pub path: String,
     pub content: Vec<u8>,
+    pub base_sha: Option<String>,
+}
+
+/// One file deletion in an atomic batch.
+pub struct BatchDelete {
+    pub path: String,
     pub base_sha: Option<String>,
 }
 
@@ -729,6 +735,105 @@ pub async fn write_files(
             }
         };
         tx.commit("jjlab: write files")
+            .await
+            .map_err(|e| RepoError::Other(e.to_string()))?;
+        Ok::<EditOutcome, RepoError>(outcome)
+    })?;
+
+    project::project_repo(store, db, org, repo).await?;
+    Ok(outcome)
+}
+
+/// Atomically delete several files as one change on top of `branch`'s head.
+/// Every delete's base blob sha is validated up front; a mismatch on ANY file
+/// rejects the WHOLE batch (409) before anything is removed. All removals land
+/// in a single `MergedTreeBuilder`, produce one commit, and one change id.
+#[allow(clippy::too_many_arguments)]
+pub async fn delete_files(
+    store: &Arc<RepoStore>,
+    db: &Db,
+    org: &str,
+    repo: &str,
+    branch: &str,
+    deletes: &[BatchDelete],
+    message: &str,
+    author: (String, String),
+    amend: bool,
+) -> Result<EditOutcome, RepoError> {
+    jjlab_core::validate_ref_name(branch, "branch").map_err(RepoError::Invalid)?;
+    if deletes.is_empty() {
+        return Err(RepoError::Invalid("batch contains no files".into()));
+    }
+    let handle = store.open(org, repo).await?;
+    let signature = jj_lib::backend::Signature {
+        name: author.0,
+        email: author.1,
+        timestamp: jj_lib::backend::Timestamp::now(),
+    };
+    let repo_arc = handle.repo.clone();
+    let base = pollster::block_on(async { crate::read::resolve_snapshot(&repo_arc, branch) })?;
+
+    let outcome = pollster::block_on(async {
+        let mut tx = handle.repo.start_transaction();
+        let outcome = {
+            let mut_repo = tx.repo_mut();
+            let parent = mut_repo
+                .store()
+                .get_commit(&base)
+                .map_err(|e| RepoError::Other(e.to_string()))?;
+
+            for del in deletes {
+                let current = file_blob_sha(&parent, &del.path).await?;
+                assert_blob_base(current, del.base_sha.as_deref())?;
+            }
+
+            let mut builder = MergedTreeBuilder::new(parent.tree());
+            for del in deletes {
+                let repo_path = RepoPathBuf::from_internal_string(&del.path)
+                    .map_err(|e| RepoError::Other(format!("bad path {:?}: {e}", del.path)))?;
+                builder.set_or_remove(repo_path, Merge::absent());
+            }
+            let merged = builder
+                .write_tree()
+                .await
+                .map_err(|e| RepoError::Other(format!("write tree: {e}")))?;
+
+            let can_amend = amend && base != mut_repo.store().root_commit_id().clone();
+            let commit = if can_amend {
+                let mut b = mut_repo.rewrite_commit(&parent);
+                b = b.set_tree(merged).set_description(message.to_string());
+                let commit = b
+                    .write()
+                    .await
+                    .map_err(|e| RepoError::Other(format!("rewrite commit: {e}")))?;
+                mut_repo
+                    .rebase_descendants()
+                    .await
+                    .map_err(|e| RepoError::Other(format!("rebase descendants: {e}")))?;
+                commit
+            } else {
+                let commit = mut_repo
+                    .new_commit(vec![base.clone()], merged)
+                    .set_description(message.to_string())
+                    .set_author(signature.clone())
+                    .set_committer(signature.clone())
+                    .write()
+                    .await
+                    .map_err(|e| RepoError::Other(format!("write commit: {e}")))?;
+                let target: jj_lib::ref_name::RefNameBuf = branch.to_string().into();
+                mut_repo.set_local_bookmark_target(
+                    &target,
+                    jj_lib::op_store::RefTarget::normal(commit.id().clone()),
+                );
+                commit
+            };
+
+            EditOutcome {
+                sha: commit.id().hex(),
+                change_id: commit.change_id().reverse_hex(),
+            }
+        };
+        tx.commit("jjlab: delete files")
             .await
             .map_err(|e| RepoError::Other(e.to_string()))?;
         Ok::<EditOutcome, RepoError>(outcome)
