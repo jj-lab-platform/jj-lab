@@ -52,27 +52,6 @@ pub struct ConflictRow {
 }
 
 #[derive(Debug, Clone)]
-pub struct ReleaseRow {
-    pub id: i64,
-    pub repo_id: String,
-    pub tag_name: String,
-    pub name: String,
-    pub body: String,
-    pub draft: bool,
-    pub prerelease: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct ReleaseAssetRow {
-    pub id: i64,
-    pub release_id: i64,
-    pub name: String,
-    pub size: i64,
-    pub digest: String,
-    pub content_type: String,
-}
-
-#[derive(Debug, Clone)]
 pub struct WorkflowRow {
     pub id: i64,
     pub repo_id: String,
@@ -333,7 +312,7 @@ impl Db {
         }
 
         // MRs reference merge_requests; reviews/comments cascade via FK,
-        // releases/release_assets cascade, but merge_requests has no cascade.
+        // but merge_requests has no cascade.
         let mr_ids: Vec<i64> = {
             let mut stmt = conn
                 .prepare("SELECT id FROM merge_requests WHERE repo_id = ?1")
@@ -351,11 +330,6 @@ impl Db {
             )
             .map_err(|e| Error::Db(format!("delete mr: {e}")))?;
         }
-        conn.execute(
-            "DELETE FROM releases WHERE repo_id = ?1",
-            rusqlite::params![id],
-        )
-        .map_err(|e| Error::Db(format!("delete releases: {e}")))?;
 
         conn.execute("DELETE FROM repos WHERE id = ?1", rusqlite::params![id])
             .map_err(|e| Error::Db(format!("delete repo: {e}")))?;
@@ -1063,180 +1037,6 @@ pub fn mr_review_state(&self, mr_id: i64) -> Result<String> {
     }
 }
 
-    // ── releases (M5-A) ──
-
-    pub fn create_release(
-        &self,
-        repo_id: &str,
-        tag_name: &str,
-        name: &str,
-        body: &str,
-        draft: bool,
-        prerelease: bool,
-    ) -> Result<ReleaseRow> {
-        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
-        conn.execute(
-            "INSERT INTO releases (repo_id, tag_name, name, body, draft, prerelease)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT (repo_id, tag_name) DO UPDATE SET
-               name = excluded.name, body = excluded.body,
-               draft = excluded.draft, prerelease = excluded.prerelease",
-            rusqlite::params![repo_id, tag_name, name, body, draft, prerelease],
-        )
-        .map_err(|e| Error::Db(format!("create release: {e}")))?;
-        let id = conn.last_insert_rowid();
-        Self::release_from(&conn, id)
-    }
-
-    fn release_from(conn: &Connection, id: i64) -> Result<ReleaseRow> {
-        conn.query_row(
-            "SELECT id, repo_id, tag_name, name, body, draft, prerelease
-             FROM releases WHERE id = ?1",
-            [id],
-            |r| {
-                Ok(ReleaseRow {
-                    id: r.get(0)?,
-                    repo_id: r.get(1)?,
-                    tag_name: r.get(2)?,
-                    name: r.get(3)?,
-                    body: r.get(4)?,
-                    draft: r.get::<_, i64>(5)? != 0,
-                    prerelease: r.get::<_, i64>(6)? != 0,
-                })
-            },
-        )
-        .map_err(|e| Error::Db(format!("get release: {e}")))
-    }
-
-    pub fn list_releases(&self, repo_id: &str) -> Result<Vec<ReleaseRow>> {
-        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
-        let mut stmt = conn
-            .prepare("SELECT id FROM releases WHERE repo_id = ?1 ORDER BY created_at DESC, id DESC")
-            .map_err(|e| Error::Db(format!("list releases: {e}")))?;
-        let ids: Vec<i64> = stmt
-            .query_map([repo_id], |r| r.get(0))
-            .map_err(|e| Error::Db(format!("list releases: {e}")))?
-            .filter_map(|r| r.ok())
-            .collect();
-        ids.into_iter().map(|id| Self::release_from(&conn, id)).collect()
-    }
-
-    pub fn get_release_by_tag(&self, repo_id: &str, tag: &str) -> Result<Option<ReleaseRow>> {
-        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
-        let id: Option<i64> = conn
-            .query_row(
-                "SELECT id FROM releases WHERE repo_id = ?1 AND tag_name = ?2",
-                rusqlite::params![repo_id, tag],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(|e| Error::Db(format!("get release by tag: {e}")))?;
-        match id {
-            Some(id) => Ok(Some(Self::release_from(&conn, id)?)),
-            None => Ok(None),
-        }
-    }
-
-    pub fn delete_release(&self, id: i64) -> Result<()> {
-        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
-        conn.execute("DELETE FROM releases WHERE id = ?1", [id])
-            .map_err(|e| Error::Db(format!("delete release: {e}")))?;
-        Ok(())
-    }
-
-    pub fn add_release_asset(
-        &self,
-        release_id: i64,
-        name: &str,
-        size: i64,
-        digest: &str,
-        content_type: &str,
-    ) -> Result<ReleaseAssetRow> {
-        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
-        conn.execute(
-            "INSERT INTO release_assets (release_id, name, size, digest, content_type)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT (release_id, name) DO UPDATE SET
-               size = excluded.size, digest = excluded.digest,
-               content_type = excluded.content_type",
-            rusqlite::params![release_id, name, size, digest, content_type],
-        )
-        .map_err(|e| Error::Db(format!("add release asset: {e}")))?;
-        let id = conn.last_insert_rowid();
-        conn.query_row(
-            "SELECT id, release_id, name, size, digest, content_type
-             FROM release_assets WHERE id = ?1",
-            [id],
-            |r| {
-                Ok(ReleaseAssetRow {
-                    id: r.get(0)?,
-                    release_id: r.get(1)?,
-                    name: r.get(2)?,
-                    size: r.get(3)?,
-                    digest: r.get(4)?,
-                    content_type: r.get(5)?,
-                })
-            },
-        )
-        .map_err(|e| Error::Db(format!("get release asset: {e}")))
-    }
-
-    pub fn list_release_assets(&self, release_id: i64) -> Result<Vec<ReleaseAssetRow>> {
-        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
-        let mut stmt = conn
-            .prepare("SELECT id, release_id, name, size, digest, content_type
-                      FROM release_assets WHERE release_id = ?1 ORDER BY id")
-            .map_err(|e| Error::Db(format!("list release assets: {e}")))?;
-        let rows = stmt
-            .query_map([release_id], |r| {
-                Ok(ReleaseAssetRow {
-                    id: r.get(0)?,
-                    release_id: r.get(1)?,
-                    name: r.get(2)?,
-                    size: r.get(3)?,
-                    digest: r.get(4)?,
-                    content_type: r.get(5)?,
-                })
-            })
-            .map_err(|e| Error::Db(format!("list release assets: {e}")))?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| Error::Db(format!("list release assets: {e}")))?);
-        }
-        Ok(out)
-    }
-
-    pub fn get_release_asset(&self, release_id: i64, name: &str) -> Result<Option<ReleaseAssetRow>> {
-        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
-        conn.query_row(
-            "SELECT id, release_id, name, size, digest, content_type
-             FROM release_assets WHERE release_id = ?1 AND name = ?2",
-            rusqlite::params![release_id, name],
-            |r| {
-                Ok(ReleaseAssetRow {
-                    id: r.get(0)?,
-                    release_id: r.get(1)?,
-                    name: r.get(2)?,
-                    size: r.get(3)?,
-                    digest: r.get(4)?,
-                    content_type: r.get(5)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(|e| Error::Db(format!("get release asset: {e}")))
-    }
-
-    pub fn delete_release_asset(&self, release_id: i64, name: &str) -> Result<()> {
-        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
-        conn.execute(
-            "DELETE FROM release_assets WHERE release_id = ?1 AND name = ?2",
-            rusqlite::params![release_id, name],
-        )
-        .map_err(|e| Error::Db(format!("delete release asset: {e}")))?;
-        Ok(())
-    }
-
     // ── actions / CI (M6-C1) ──
 
     pub fn upsert_workflow(
@@ -1676,27 +1476,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at TEXT,
     finished_at TEXT
 );
-CREATE TABLE IF NOT EXISTS releases (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    repo_id TEXT NOT NULL REFERENCES repos(id) ON UPDATE CASCADE,
-    tag_name TEXT NOT NULL,
-    name TEXT NOT NULL DEFAULT '',
-    body TEXT NOT NULL DEFAULT '',
-    draft INTEGER NOT NULL DEFAULT 0,
-    prerelease INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
-    UNIQUE (repo_id, tag_name)
-);
-CREATE TABLE IF NOT EXISTS release_assets (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    size INTEGER NOT NULL,
-    digest TEXT NOT NULL,
-    content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
-    UNIQUE (release_id, name)
-);
 "#;
 #[cfg(test)]
 mod tests {
@@ -1795,42 +1574,6 @@ mod tests {
     }
 
     // ── releases ──
-
-    #[test]
-    fn release_upsert_same_tag_replaces_fields() {
-        let (_d, db) = db();
-        let id = seed_repo(&db, "o", "r");
-        let r1 = db.create_release(&id, "v1", "n", "b", false, false).unwrap();
-        let r2 = db.create_release(&id, "v1", "n2", "b2", true, true).unwrap();
-        assert_eq!(r1.id, r2.id);
-        assert_eq!((r2.name.as_str(), r2.draft, r2.prerelease), ("n2", true, true));
-        assert_eq!(db.list_releases(&id).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn release_asset_upsert_and_cascade() {
-        let (_d, db) = db();
-        let id = seed_repo(&db, "o", "r");
-        let rel = db.create_release(&id, "v1", "", "", false, false).unwrap();
-        let a1 = db.add_release_asset(rel.id, "bin", 3, &"d".repeat(64), "app/bin").unwrap();
-        // Same-name upload replaces the row.
-        let a2 = db.add_release_asset(rel.id, "bin", 9, &"e".repeat(64), "text/plain").unwrap();
-        assert_eq!(a1.id, a2.id);
-        assert_eq!(a2.size, 9);
-        assert_eq!(db.list_release_assets(rel.id).unwrap().len(), 1);
-        // Deleting the release cascades.
-        db.delete_release(rel.id).unwrap();
-        assert!(db.get_release_asset(rel.id, "bin").unwrap().is_none());
-    }
-
-    #[test]
-    fn get_release_by_tag_and_missing() {
-        let (_d, db) = db();
-        let id = seed_repo(&db, "o", "r");
-        db.create_release(&id, "v9", "", "", false, false).unwrap();
-        assert!(db.get_release_by_tag(&id, "v9").unwrap().is_some());
-        assert!(db.get_release_by_tag(&id, "nope").unwrap().is_none());
-    }
 
     // ── workflows / runs / jobs ──
 
