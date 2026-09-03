@@ -72,6 +72,8 @@ fn spawn(service: GitService, git_dir: &Path, advertise: bool) -> Command {
     // option, so it must precede the subcommand.
     cmd.arg("-c");
     cmd.arg("uploadpack.hideRefs=refs/jj");
+    cmd.arg("-c");
+    cmd.arg("uploadpack.hideRefs=refs/jjlab/mr");
     cmd.arg(service.as_str());
     if advertise {
         cmd.args(["--stateless-rpc", "--advertise-refs"]);

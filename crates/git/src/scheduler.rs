@@ -48,6 +48,14 @@ pub async fn tick(
 ) -> Result<usize, String> {
     tick_schedules(&db, &store, &logs_root).await;
 
+    // Reconcile MR GC anchors (drop refs for MRs no longer open). Cheap and
+    // idempotent; runs on every tick so it heals the crash window between a
+    // DB state change and the ref delete.
+    match crate::mr_reconcile::prune_stale_mr_anchors(&db, &store).await {
+        Ok(n) if n > 0 => tracing::info!(pruned = n, "pruned stale MR anchors"),
+        _ => {}
+    }
+
     let k8s = runtime::connect().await.map_err(|e| e.to_string())?;
     let mut pending = db
         .pending_runs()
@@ -241,12 +249,17 @@ async fn execute_run(
 /// Blocking scheduler loop. Runs `tick` on an interval; never exits unless
 /// the process stops. Intended to be spawned from `main`.
 pub async fn run_loop(db: Arc<Db>, store: Arc<RepoStore>, logs_root: std::path::PathBuf, interval: Duration) {
-    if !crate::actions::ci_enabled() {
-        tracing::info!("CI scheduler disabled (set JJLAB_CI_ENABLED=1 to enable)");
-        return;
-    }
-    tracing::info!(?interval, "CI scheduler starting");
+    tracing::info!(?interval, "scheduler loop starting");
     loop {
+        // MR GC-anchor reconcile runs on every tick regardless of CI, so it
+        // is never gated behind JJLAB_CI_ENABLED.
+        if let Err(e) = crate::mr_reconcile::prune_stale_mr_anchors(&db, &store).await {
+            tracing::warn!(err = %e, "MR anchor reconcile failed");
+        }
+        if !crate::actions::ci_enabled() {
+            tokio::time::sleep(interval).await;
+            continue;
+        }
         match tick(db.clone(), store.clone(), logs_root.clone()).await {
             Ok(n) if n > 0 => tracing::info!(runs = n, "CI scheduler processed runs"),
             Ok(_) => {}

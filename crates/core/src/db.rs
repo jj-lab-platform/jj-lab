@@ -123,6 +123,7 @@ pub struct MrRow {
     pub state: String,
     pub head_change_id: String,
     pub head_sha: Option<String>,
+    pub head_branch: Option<String>,
     pub base_rev: String,
 }
 
@@ -275,22 +276,21 @@ impl Db {
     }
 
     /// Delete a repo and all its dependent metadata rows (cascade by hand for
-    /// tables whose FK doesn't define ON DELETE CASCADE). Also removes the org
-    /// row when it has no more repos.
+    /// tables whose FK doesn't define ON DELETE CASCADE). The org row is left
+    /// in place — orgs are first-class resources and are removed only via the
+    /// explicit `delete_org`.
     pub fn delete_repo(&self, id: &str) -> Result<()> {
         let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
-        let org_id: String = match conn
+        let exists: bool = conn
             .query_row(
-                "SELECT org_id FROM repos WHERE id = ?1",
+                "SELECT EXISTS(SELECT 1 FROM repos WHERE id = ?1)",
                 rusqlite::params![id],
                 |r| r.get(0),
             )
-            .optional()
-            .map_err(|e| Error::Db(format!("get org for repo: {e}")))?
-        {
-            Some(org) => org,
-            None => return Ok(()),
-        };
+            .map_err(|e| Error::Db(format!("delete repo exists: {e}")))?;
+        if !exists {
+            return Ok(());
+        }
 
         // Tables keyed by repo_id (FK REFERENCES repos(id) ON UPDATE CASCADE without cascade), and
         // `changes` last because bookmarks/conflicts/change_parents reference it.
@@ -360,18 +360,6 @@ impl Db {
         conn.execute("DELETE FROM repos WHERE id = ?1", rusqlite::params![id])
             .map_err(|e| Error::Db(format!("delete repo: {e}")))?;
 
-        // Drop the org if it has no remaining repos.
-        let remaining: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM repos WHERE org_id = ?1",
-                rusqlite::params![org_id],
-                |r| r.get(0),
-            )
-            .map_err(|e| Error::Db(format!("count org repos: {e}")))?;
-        if remaining == 0 {
-            conn.execute("DELETE FROM orgs WHERE id = ?1", rusqlite::params![org_id])
-                .map_err(|e| Error::Db(format!("delete org: {e}")))?;
-        }
         Ok(())
     }
 
@@ -420,6 +408,151 @@ impl Db {
             .map_err(|e| Error::Db(format!("list orgs query: {e}")))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| Error::Db(format!("list orgs row: {e}")))
+    }
+
+    /// All orgs with their repo count, ordered by name.
+    pub fn list_orgs_with_counts(&self) -> Result<Vec<(String, String, i64)>> {
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT o.id, o.name, COUNT(r.id)
+                 FROM orgs o LEFT JOIN repos r ON r.org_id = o.id
+                 GROUP BY o.id ORDER BY o.name",
+            )
+            .map_err(|e| Error::Db(format!("list orgs counts prepare: {e}")))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+            })
+            .map_err(|e| Error::Db(format!("list orgs counts query: {e}")))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| Error::Db(format!("list orgs counts row: {e}")))
+    }
+
+    /// Fetch one org `(id, name)`; None when absent.
+    pub fn get_org(&self, id: &str) -> Result<Option<(String, String)>> {
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
+        let mut stmt = conn
+            .prepare("SELECT id, name FROM orgs WHERE id = ?1")
+            .map_err(|e| Error::Db(format!("get org prepare: {e}")))?;
+        let mut rows = stmt
+            .query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| Error::Db(format!("get org query: {e}")))?;
+        match rows.next() {
+            Some(Ok(v)) => Ok(Some(v)),
+            Some(Err(e)) => Err(Error::Db(format!("get org row: {e}"))),
+            None => Ok(None),
+        }
+    }
+
+    /// Count repos belonging to an org.
+    pub fn count_org_repos(&self, org_id: &str) -> Result<i64> {
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM repos WHERE org_id = ?1",
+            rusqlite::params![org_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| Error::Db(format!("count org repos: {e}")))
+    }
+
+    /// Create an org with `name == id`. Conflict when it already exists.
+    pub fn create_org(&self, name: &str) -> Result<()> {
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
+        conn.execute(
+            "INSERT INTO orgs (id, name) VALUES (?1, ?1)",
+            rusqlite::params![name],
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(e2, _)
+                if e2.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                Error::Conflict(format!("org {name} already exists"))
+            }
+            other => Error::Db(format!("create org: {other}")),
+        })?;
+        Ok(())
+    }
+
+    /// Rename an org, cascading `org_id` to every child repo (the FK has no
+    /// ON UPDATE CASCADE, so the update is done by hand in one transaction).
+    /// Returns None when the old org doesn't exist.
+    pub fn rename_org(&self, old: &str, new: &str) -> Result<Option<()>> {
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
+        let new_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM orgs WHERE id = ?1)",
+                rusqlite::params![new],
+                |r| r.get(0),
+            )
+            .map_err(|e| Error::Db(format!("rename org exists: {e}")))?;
+        if new_exists {
+            return Err(Error::Conflict(format!("org {new} already exists")));
+        }
+        let old_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM orgs WHERE id = ?1)",
+                rusqlite::params![old],
+                |r| r.get(0),
+            )
+            .map_err(|e| Error::Db(format!("rename org old exists: {e}")))?;
+        if !old_exists {
+            return Ok(None);
+        }
+        // Manual cascade: repos.org_id has no ON UPDATE CASCADE, and the repo
+        // ids are `{org}/{repo}` namespaced. Rewriting both id and org_id
+        // mid-transaction orphans the children, which `defer_foreign_keys`
+        // permits; at COMMIT the org rename, the repo-id rewrite, and every
+        // dependent FK (via ON UPDATE CASCADE) resolve atomically. A repo-id
+        // collision with a target-namespace repo fails the whole rename.
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| Error::Db(format!("rename org tx: {e}")))?;
+        tx.execute_batch("PRAGMA defer_foreign_keys = ON")
+            .map_err(|e| Error::Db(format!("rename org defer: {e}")))?;
+        tx.execute(
+            "UPDATE repos SET id = (?1 || substr(id, ?2)), org_id = ?1 WHERE org_id = ?3",
+            rusqlite::params![new, (old.len() + 1) as i64, old],
+        )
+        .map_err(|e| Error::Db(format!("rename org cascade: {e}")))?;
+        tx.execute(
+            "UPDATE orgs SET id = ?1, name = ?1 WHERE id = ?2",
+            rusqlite::params![new, old],
+        )
+        .map_err(|e| Error::Db(format!("rename org update: {e}")))?;
+        tx.commit()
+            .map_err(|e| Error::Db(format!("rename org commit: {e}")))?;
+        Ok(Some(()))
+    }
+
+    /// Delete an org, refusing when it still holds repos.
+    pub fn delete_org(&self, id: &str) -> Result<Option<()>> {
+        let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM orgs WHERE id = ?1)",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .map_err(|e| Error::Db(format!("delete org exists: {e}")))?;
+        if !exists {
+            return Ok(None);
+        }
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM repos WHERE org_id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .map_err(|e| Error::Db(format!("delete org count: {e}")))?;
+        if count > 0 {
+            return Err(Error::Conflict(format!(
+                "org {id} is not empty ({count} repo(s))"
+            )));
+        }
+        conn.execute("DELETE FROM orgs WHERE id = ?1", rusqlite::params![id])
+            .map_err(|e| Error::Db(format!("delete org: {e}")))?;
+        Ok(Some(()))
     }
 
     /// All repos (across orgs) ordered by id.
@@ -688,7 +821,7 @@ pub fn create_mr(
 fn get_mr_from(conn: &Connection, id: i64) -> Result<MrRow> {
     conn.query_row(
         "SELECT id, repo_id, number, title, description, author, state,
-                head_change_id, head_sha, base_rev
+                head_change_id, head_sha, head_branch, base_rev
          FROM merge_requests WHERE id = ?1",
         [id],
         |r| {
@@ -702,7 +835,8 @@ fn get_mr_from(conn: &Connection, id: i64) -> Result<MrRow> {
                 state: r.get(6)?,
                 head_change_id: r.get(7)?,
                 head_sha: r.get(8)?,
-                base_rev: r.get(9)?,
+                head_branch: r.get(9)?,
+                base_rev: r.get(10)?,
             })
         },
     )
@@ -1432,7 +1566,7 @@ CREATE TABLE IF NOT EXISTS orgs (
 );
 CREATE TABLE IF NOT EXISTS repos (
     id TEXT PRIMARY KEY,
-    org_id TEXT NOT NULL REFERENCES orgs(id),
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE RESTRICT,
     name TEXT NOT NULL,
     default_bookmark TEXT NOT NULL DEFAULT 'main',
     git_url TEXT,
@@ -1741,5 +1875,46 @@ mod tests {
         conn.execute("DELETE FROM runs WHERE id = ?1", [run]).unwrap();
         drop(conn);
         assert!(db.list_jobs(run).unwrap().is_empty());
+    }
+    // ── orgs (first-class resources) ──
+
+    #[test]
+    fn org_create_rename_delete_lifecycle() {
+        let (_d, db) = db();
+        // Create an empty org.
+        db.create_org("team-a").unwrap();
+        assert_eq!(db.list_orgs_with_counts().unwrap(), vec![("team-a".into(), "team-a".into(), 0)]);
+        // Duplicate create conflicts.
+        assert!(matches!(db.create_org("team-a"), Err(Error::Conflict(_))));
+        // Add a repo; count reflects it and delete now refuses.
+        let id = format!("team-a/repo1");
+        db.upsert_repo(&id, "team-a", "repo1", "main", None).unwrap();
+        assert_eq!(db.count_org_repos("team-a").unwrap(), 1);
+        assert!(matches!(db.delete_org("team-a"), Err(Error::Conflict(_))));
+        // Missing org on delete/rename.
+        assert_eq!(db.delete_org("nope").unwrap(), None);
+        // Rename cascades org_id to the child repo.
+        db.rename_org("team-a", "team-b").unwrap();
+        assert_eq!(db.get_org("team-b").unwrap(), Some(("team-b".into(), "team-b".into())));
+        assert_eq!(db.get_org("team-a").unwrap(), None);
+        let repo = db.get_repo("team-b/repo1").unwrap().unwrap();
+        assert_eq!(repo.org_id, "team-b");
+        // Rename onto an existing org conflicts.
+        db.create_org("team-c").unwrap();
+        assert!(matches!(db.rename_org("team-b", "team-c"), Err(Error::Conflict(_))));
+        // Delete repo keeps org (first-class: never auto-cascaded).
+        db.delete_repo("team-b/repo1").unwrap();
+        assert_eq!(db.get_org("team-b").unwrap().map(|(n, _)| n), Some("team-b".into()));
+        // Now the org is empty and can be deleted.
+        assert_eq!(db.delete_org("team-b").unwrap(), Some(()));
+        assert_eq!(db.get_org("team-b").unwrap(), None);
+    }
+
+    #[test]
+    fn org_name_equals_id_validation() {
+        let (_d, db) = db();
+        for bad in ["", "a/b", ".hidden", "con"] {
+            assert!(crate::validate::validate_segment(bad, "org").is_err());
+        }
     }
 }

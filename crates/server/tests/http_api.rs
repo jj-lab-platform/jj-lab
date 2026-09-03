@@ -778,9 +778,19 @@ async fn delete_repo_cleans_db_listing() {
         .any(|o| o["org"] == "o"
             && o["repos"].as_array().unwrap().iter().any(|r| r["repo"] == "cleanup"));
     assert!(!has_ghost, "deleted repo must not linger in listing");
-    // Org row also dropped when empty.
+    // Org row is a first-class resource: it survives an empty repo (explicit
+    // DELETE /api/v1/orgs/{org} removes it).
+    let org_present = body["orgs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|o| o["org"] == "o");
+    assert!(org_present, "empty org should be retained as a first-class resource");
+    let _ = app.send("DELETE", "/api/v1/orgs/o", Some("wtoken"), None).await;
+    let mut resp = app.send("GET", "/api/v1/repos", None, None).await;
+    let body = TestApp::body_json(&mut resp).await;
     let org_gone = body["orgs"].as_array().unwrap().iter().all(|o| o["org"] != "o");
-    assert!(org_gone, "empty org should be removed");
+    assert!(org_gone, "empty org should be removed after explicit delete");
 }
 
 // ── frontend-support endpoints (Explore / graph / file-log / search) ──

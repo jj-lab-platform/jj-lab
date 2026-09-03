@@ -10,6 +10,8 @@ pub mod helm;
 pub mod http;
 pub mod ingest;
 pub mod mutation;
+pub mod mr_anchor;
+pub mod mr_reconcile;
 pub mod namespaces;
 pub mod project;
 pub mod read;

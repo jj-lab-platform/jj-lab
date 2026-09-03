@@ -471,6 +471,11 @@ use axum::routing::put as put_route;
     let mut router = Router::new()
             .route("/api/v1/health", get(health))
             .route("/api/v1/repos", get(list_orgs))
+            .route("/api/v1/orgs", get(list_orgs_rich).post(create_org))
+            .route(
+                "/api/v1/orgs/{org}",
+                get(get_org).patch(rename_org).delete(delete_org),
+            )
             .route("/api/v1/repos/{org}/{repo}/graph", get(graph_handler))
             .route("/api/v1/repos/{org}/{repo}/file-log", get(file_log_handler))
             .route("/api/v1/repos/{org}/{repo}/search", get(search_handler))

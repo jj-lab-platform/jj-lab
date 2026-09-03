@@ -248,6 +248,10 @@ pub async fn delete_repo(store: &Arc<RepoStore>, org: &str, repo: &str) -> Resul
             repo: repo.to_string(),
         });
     }
+    // Release MR GC anchors before the git dir is torn down.
+    if let Err(e) = crate::mr_anchor::clear_repo_mr_heads(store, org, repo).await {
+        tracing::warn!(err = %e, org, repo, "clear MR anchors on repo delete failed");
+    }
     let dir = store.repo_dir_checked(org, repo)?;
     tokio::fs::remove_dir_all(&dir)
         .await

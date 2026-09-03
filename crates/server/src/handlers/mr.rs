@@ -15,6 +15,7 @@ fn mr_json(mr: &jjlab_core::db::MrRow, review_state: String) -> Value {
         "state": mr.state,
         "head_change_id": mr.head_change_id,
         "head_sha": mr.head_sha,
+        "head_branch": mr.head_branch,
         "base": mr.base_rev,
         "review_state": review_state,
     })
@@ -49,6 +50,8 @@ pub async fn create_mr_handler(
     };
     let repo_id = format!("{org}/{repo}");
     let (org2, r2b, sha2) = (org.clone(), repo.clone(), head_sha.clone());
+    let anchor_org = org.clone();
+    let anchor_repo = repo.clone();
     let db = state.db.clone();
     let (title, descr, head, base, author) =
         (body.title, body.body, body.head, body.base, server_author().0);
@@ -69,6 +72,14 @@ pub async fn create_mr_handler(
     .await
     {
         Ok(mr) => {
+            // Pin the GC anchor so the reviewed head snapshot outlives the
+            // source bookmark (amend/rebase/delete would otherwise sweep it).
+            let a = state.store.clone();
+            let anchor_sha = mr.head_sha.clone().unwrap_or_default();
+            let anchor_fut = jjlab_git::mr_anchor::set_mr_head(&a, &anchor_org, &anchor_repo, mr.number, &anchor_sha);
+            if let Err(e) = anchor_fut.await {
+                tracing::warn!(err = %e, mr = mr.number, "set MR head GC anchor failed");
+            }
             // `on: pull_request` — enqueue CI runs at the MR's head snapshot.
             trigger_pull_request(&state, org2, r2b, sha2).await;
             (StatusCode::CREATED, Json(mr_json(&mr, "pending".to_string()))).into_response()
@@ -123,10 +134,18 @@ pub async fn update_mr_handler(
     let db = state.db.clone();
     let stat = body.state;
     let id = mr.id;
-    let updated = match db_run(&db, move |db| db.update_mr(id, Some(&stat), None, None)).await {
+    let stat2 = stat.clone();
+    let updated = match db_run(&db, move |db| db.update_mr(id, Some(&stat2), None, None)).await {
         Ok(u) => u,
         Err(resp) => return resp,
     };
+    // Terminal states release the GC anchor (merged / closed / reopen are all
+    // reflected here; deleted MRs are pruned by the reconciler).
+    if matches!(stat.as_str(), "merged" | "closed") {
+        if let Err(e) = jjlab_git::mr_anchor::clear_mr_head(&state.store, &org, &repo, number).await {
+            tracing::warn!(err = %e, mr = number, "clear MR head GC anchor failed");
+        }
+    }
     let rs = db_run(&db, move |db| db.mr_review_state(id)).await.unwrap_or_default();
     Json(mr_json(&updated, rs)).into_response()
 }
@@ -154,11 +173,16 @@ pub async fn update_mr_head_handler(
     let db = state.db.clone();
     let id = mr.id;
     let sha_for_ci = head_sha.clone();
+    let sha_update = head_sha.clone();
     let updated =
-        match db_run(&db, move |db| db.update_mr(id, None, Some(&head_sha), Some(&head_sha))).await {
+        match db_run(&db, move |db| db.update_mr(id, None, Some(&sha_update), Some(&sha_update))).await {
             Ok(u) => u,
             Err(resp) => return resp,
         };
+    // Force-push refresh: move the GC anchor to the new head.
+    if let Err(e) = jjlab_git::mr_anchor::set_mr_head(&state.store, &org, &repo, number, &head_sha).await {
+        tracing::warn!(err = %e, mr = number, "re-anchor MR head GC anchor failed");
+    }
     trigger_pull_request(&state, org, repo, sha_for_ci).await;
     let rs = db_run(&db, move |db| db.mr_review_state(id)).await.unwrap_or_default();
     Json(mr_json(&updated, rs)).into_response()
