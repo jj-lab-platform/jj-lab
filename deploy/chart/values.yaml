@@ -41,7 +41,7 @@ persistence:
 # --- proxy env for the jjlab process (git/e2e net access; the scheduler
 #     forces direct k8s API access regardless, see runtime.rs) ---
 httpProxy: "http://mihomo.develop.svc.cluster.local:7890"
-noProxy: "localhost,127.0.0.1,.svc.cluster.local,.svc,npmjs.org,registry.npmjs.org,crates.io,index.crates.io,static.crates.io,proxy.golang.org,nuget.org,www.nuget.org,api.nuget.org,api.v2.nuget.org,azuresearch-usnc.nuget.org,globalcdn.nuget.org,nuget.azure.cn"
+noProxy: "localhost,127.0.0.1,.svc.cluster.local,.svc"
 
 # --- in-cluster data/asset/log locations (emptyDir-backed in dev). jjlab keeps
 #     its sqlite db + bare repos + assets + logs all under this single dir ---
