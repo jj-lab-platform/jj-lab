@@ -12,6 +12,7 @@ use axum::response::{IntoResponse, Response, Sse};
 use axum::Json;
 use serde_json::json;
 
+use crate::registry::self_base;
 use jjlab_git::task::TaskKind;
 
 /// The kube client is built lazily and cached; a single client serves all
@@ -48,6 +49,9 @@ pub async fn ops_config(State(state): State<AppState>) -> Response {
         "namespaces": state.namespaces.list(),
         "default_namespace": state.namespaces.default(),
         "buildkit_addr": jjlab_git::build::buildkit_addr(),
+        "registry_base": self_base(),
+        "worker_ref": std::env::var("JJLAB_SANDBOX_WORKER_REF")
+            .unwrap_or_else(|_| "jj-lab.temp.svc.cluster.local/root/zergx-worker:latest".to_string()),
     }))
     .into_response()
 }
@@ -141,6 +145,28 @@ pub async fn ops_service_create(
     let sc = jjlab_git::service::ServiceClient::new(client);
     let name = body.name.clone();
     let kind = body.kind.clone();
+
+    // Sandbox worker-ization: a bare service requested with the
+    // `zergx/sandbox.image` annotation (the desired base image) is transparently
+    // derived into a worker image (`FROM base + COPY worker-go + ENTRYPOINT`) and
+    // that derived image is used to create the pod. This lets a caller pass any
+    // jjlab-reachable base image and get a worker-ready sandbox without the
+    // caller building the combined image itself. A missing annotation leaves the
+    // image untouched (regression-free for non-sandbox services).
+    let mut image = body.image.clone();
+    if kind == "bare" {
+        if let Some(base) = body.annotations.get("zergx/sandbox.image") {
+            let ref_ = std::env::var("JJLAB_SANDBOX_WORKER_REF")
+                .unwrap_or_else(|_| "jj-lab.temp.svc.cluster.local/root/zergx-worker:latest".to_string());
+            match jjlab_git::build::derive_sandbox_image(base, &ref_).await {
+                Ok(derived) => image = derived,
+                Err(e) => return json_err(StatusCode::BAD_GATEWAY, format!("derive sandbox image: {e}")),
+            }
+        }
+    }
+
+    let mut body = body;
+    body.image = image;
     let image = body.image.clone();
     match sc.ensure(&body, &ns).await {
         Ok(st) => Json(json!({

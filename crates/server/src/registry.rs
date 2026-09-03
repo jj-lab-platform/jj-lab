@@ -126,7 +126,7 @@ impl pkglab_common::Auth for TokenAuth {
 
 /// The external base URL (scheme://host[:port]) used for auth challenge
 /// realms and absolute self URLs in protocol responses.
-fn self_base() -> String {
+pub fn self_base() -> String {
     std::env::var("JJLAB_SELF_BASE")
         .ok()
         .filter(|v| !v.is_empty())

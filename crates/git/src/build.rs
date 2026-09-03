@@ -13,8 +13,10 @@
 //! The caller (ops-extension) owns the Containerfile content, image naming,
 //! and all protocol specifics.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -160,4 +162,117 @@ pub async fn run_build(
         return Err(RepoError::Other(format!("buildctl exited with status {code}")));
     }
     Ok(result_ref)
+}
+
+/// The in-process registry base (scheme://host), used to qualify the derived
+/// sandbox-image reference with the correct host.
+fn self_base() -> String {
+    std::env::var("JJLAB_SELF_BASE")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "http://localhost:8080".to_string())
+}
+
+/// In-memory cache of derived sandbox-image names so a base image is only
+/// worker-ized once per process (buildkit caches the layer anyway; this avoids
+/// a redundant buildctl invocation for repeated sandbox creation).
+static DERIVED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+/// Derive (or reuse) a sandbox runtime image from a base image by appending the
+/// worker binary and a worker entrypoint, pushed to the in-process OCI registry
+/// under a deterministic name. Only images reachable from jjlab (OCI
+/// pull-through, incl. `library/*` from Docker Hub) are accepted.
+///
+/// Returns the fully-qualified derived image reference.
+pub async fn derive_sandbox_image(base: &str, worker_ref: &str) -> RepoResult<String> {
+    let base = base.trim().to_string();
+    if base.is_empty() {
+        return Err(RepoError::Invalid("sandbox image is empty".into()));
+    }
+    // Deterministic name from the base image string: sandbox/<sanitized>-<sha256[:12]>.
+    let mut hash = sha2::Sha256::new();
+    use sha2::Digest as _;
+    hash.update(base.as_bytes());
+    let digest = hex::encode(hash.finalize());
+    let tag = format!("{}-{}", sanitize_image_name(&base), &digest[..12]);
+    let derived = format!("{}/sandbox/{}", host_of(&self_base()), tag);
+
+    // Cache: skip the build when we already derived it this process.
+    if {
+        let mut guard = DERIVED.lock().unwrap_or_else(|e| e.into_inner());
+        let set = guard.get_or_insert_with(HashSet::new);
+        !set.insert(derived.clone())
+    } {
+        return Ok(derived);
+    }
+
+    // Build a scratch context with the derived Containerfile.
+    let dir = scratch_dir("jjlab-sandbox-derive")?;
+    let containerfile = format!(
+        "FROM {base}\nCOPY --from={worker_ref} /usr/local/bin/worker-go /usr/local/bin/worker-go\nENTRYPOINT [\"worker-go\"]\n"
+    );
+    std::fs::write(dir.join("Containerfile"), &containerfile)
+        .map_err(|e| RepoError::Other(format!("write derived Containerfile: {e}")))?;
+
+    let mut args: Vec<String> = vec![
+        "--addr".into(),
+        buildkit_addr(),
+        "build".into(),
+        "--frontend".into(),
+        "dockerfile.v0".into(),
+        "--progress".into(),
+        "plain".into(),
+    ];
+    args.push("--local".into());
+    args.push(format!("context={}", dir.to_string_lossy()));
+    args.push("--local".into());
+    args.push(format!("dockerfile={}", dir.to_string_lossy()));
+    args.push("--opt".into());
+    args.push("filename=Containerfile".into());
+    args.push("--output".into());
+    args.push(format!("type=image,name={derived},push=true"));
+
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let code = crate::runtime::run_cli_stream(
+        "buildctl",
+        &arg_refs,
+        Duration::from_secs(600),
+        |_| {},
+    )
+    .await?;
+    if code != 0 {
+        if let Some(set) = DERIVED.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            set.remove(&derived);
+        }
+        return Err(RepoError::Other(format!("derive sandbox image exited with status {code}")));
+    }
+    Ok(derived)
+}
+
+/// Host[:port] of an (optional) URL, for building registry-qualified refs.
+fn host_of(raw: &str) -> String {
+    let s = raw.trim();
+    let after = if s.contains("://") {
+        s.split_once("://").map(|x| x.1).unwrap_or(s)
+    } else {
+        s
+    };
+    let host = after.split('/').next().unwrap_or(after);
+    host.trim_end_matches(':').to_string()
+}
+
+/// Sanitize a reference into a filesystem-safe tag fragment.
+fn sanitize_image_name(ref_: &str) -> String {
+    let mut out = String::new();
+    for c in ref_.chars() {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_' {
+            out.push(c);
+        } else {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    let base = if trimmed.is_empty() { "img" } else { trimmed };
+    let tail = if base.len() > 40 { &base[base.len() - 40..] } else { base };
+    tail.to_string()
 }
