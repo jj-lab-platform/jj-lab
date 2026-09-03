@@ -29,6 +29,49 @@ pub async fn rebase_handler(
     Json(json!({ "rebase": outcome })).into_response()
 }
 
+/// `POST /repos/{org}/{repo}/contents/batch` — atomically write several files
+/// as one change. Each edit carries the content and an optional optimistic-lock
+/// base blob sha; a mismatch on ANY file rejects the WHOLE batch (409), so no
+/// partial write occurs. On success a single change id is returned.
+pub async fn batch_write(State(state): State<AppState>, Path((org, repo)): Path<(String, String)>, Json(body): Json<BatchBody>) -> Response {
+    let store = state.store.clone();
+    let db = state.db.clone();
+    let author = server_author();
+    let branch = body.branch.clone();
+    let message = if body.message.is_empty() {
+        "batch update".to_string()
+    } else {
+        body.message.clone()
+    };
+    let amend = body.amend;
+    let edits: Vec<jjlab_git::mutation::BatchEdit> = body
+        .files
+        .iter()
+        .map(|f| {
+            use base64::Engine as _;
+            let content = base64::engine::general_purpose::STANDARD
+                .decode(&f.content_base64)
+                .unwrap_or_default();
+            jjlab_git::mutation::BatchEdit {
+                path: f.path.clone(),
+                content,
+                base_sha: if f.sha.is_empty() { None } else { Some(f.sha.clone()) },
+            }
+        })
+        .collect();
+    let outcome = match run_jj(move || {
+        pollster::block_on(jjlab_git::mutation::write_files(
+            &store, &db, &org, &repo, &branch, &edits, &message, author, amend,
+        ))
+    })
+    .await
+    {
+        Ok(o) => o,
+        Err(resp) => return resp,
+    };
+    Json(json!({ "sha": outcome.sha, "change_id": outcome.change_id })).into_response()
+}
+
 pub async fn create_repo(
     State(state): State<AppState>,
     Path((org, repo)): Path<(String, String)>,
@@ -227,9 +270,10 @@ pub async fn create_file(
     let author = server_author();
     let branch = body.branch.clone();
     let amend = body.amend;
+    let base_sha = if body.sha.is_empty() { None } else { Some(body.sha.clone()) };
     let outcome = match run_jj(move || {
         pollster::block_on(jjlab_git::mutation::write_file(
-            &store, &db, &org, &repo, &branch, &path, &content, &message, author, amend,
+            &store, &db, &org, &repo, &branch, &path, &content, &message, author, amend, base_sha.as_deref(),
         ))
     })
     .await
@@ -263,9 +307,10 @@ pub async fn update_file(
     let author = server_author();
     let branch = body.branch.clone();
     let amend = body.amend;
+    let base_sha = if body.sha.is_empty() { None } else { Some(body.sha.clone()) };
     let outcome = match run_jj(move || {
         pollster::block_on(jjlab_git::mutation::write_file(
-            &store, &db, &org, &repo, &branch, &path, &content, &message, author, amend,
+            &store, &db, &org, &repo, &branch, &path, &content, &message, author, amend, base_sha.as_deref(),
         ))
     })
     .await
@@ -291,9 +336,10 @@ pub async fn delete_file_handler(
     let author = server_author();
     let branch = body.branch.clone();
     let amend = body.amend;
+    let base_sha = if body.sha.is_empty() { None } else { Some(body.sha.clone()) };
     let outcome = match run_jj(move || {
         pollster::block_on(jjlab_git::mutation::delete_file(
-            &store, &db, &org, &repo, &branch, &path, &message, author, amend,
+            &store, &db, &org, &repo, &branch, &path, &message, author, amend, base_sha.as_deref(),
         ))
     })
     .await

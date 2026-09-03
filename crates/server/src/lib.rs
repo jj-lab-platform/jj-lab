@@ -130,6 +130,33 @@ pub struct FileBody {
     /// a fresh change. Defaults to `true` (jj-native amend semantics).
     #[serde(default = "default_amend")]
     amend: bool,
+    /// Optional optimistic-lock base: the blob sha the client read ("GitHub
+    /// contents" semantics). When present and the current file blob sha
+    /// differs, the write is rejected with a 409 Conflict.
+    #[serde(default)]
+    sha: String,
+}
+
+/// One file edit in an atomic batch request body.
+#[derive(serde::Deserialize)]
+pub struct BatchFile {
+    pub path: String,
+    pub content_base64: String,
+    #[serde(default)]
+    pub sha: String,
+}
+
+/// Request body for `POST /repos/{org}/{repo}/contents/batch`: several single
+/// file edits applied together in one atomic change.
+#[derive(serde::Deserialize)]
+pub struct BatchBody {
+    #[serde(default = "default_branch")]
+    pub branch: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default = "default_amend")]
+    pub amend: bool,
+    pub files: Vec<BatchFile>,
 }
 
 pub 
@@ -533,6 +560,10 @@ use axum::routing::put as put_route;
             .route(
                 "/api/v1/repos/{org}/{repo}/contents/{*path}",
                 post(create_file).put(update_file).delete(delete_file_handler),
+            )
+            .route(
+                "/api/v1/repos/{org}/{repo}/contents/batch",
+                post(batch_write),
             )
             .route("/api/v1/repos/{org}/{repo}/rebase", post(rebase_handler))
             // Extended read surface (E), Gitea-aligned.
