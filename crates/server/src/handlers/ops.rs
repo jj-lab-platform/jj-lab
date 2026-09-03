@@ -413,14 +413,14 @@ pub async fn ops_build(
                     if let Some(img) = image.as_deref() {
                         let meta = state.registry.as_ref().map(|r| r.meta.clone());
                         if let Some(meta) = meta {
-                            let (org2, repo2, ref2) = (org.clone(), repo.clone(), bookmark.clone());
+                            let (org2, repo2, bookmark2) = (org.clone(), repo.clone(), bookmark.clone());
                             let mut art = pkglab_common::artifact::Artifact {
                                 format: "oci".into(),
                                 repository: img.to_string(),
                                 version: result.clone(),
                                 source: "push".into(),
                                 repo: format!("{org2}/{repo2}"),
-                                ref_: ref2.clone(),
+                                bookmark: bookmark2.clone(),
                                 ..Default::default()
                             };
                             // Best-effort prove the head sha for this repo.

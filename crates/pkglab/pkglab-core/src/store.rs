@@ -222,7 +222,7 @@ impl pkglab_common::ArtifactStore for SqliteArtifactStore {
             versions: std::collections::BTreeSet<String>,
             source: String,
             repo: String,
-            ref_: String,
+            bookmark: String,
             sha: String,
         }
         let mut by_repo: BTreeMap<(String, String), Acc> = BTreeMap::new();
@@ -243,7 +243,7 @@ impl pkglab_common::ArtifactStore for SqliteArtifactStore {
                     versions: Default::default(),
                     source: a.source.clone(),
                     repo: a.repo.clone(),
-                    ref_: a.ref_.clone(),
+                    bookmark: a.bookmark.clone(),
                     sha: a.sha.clone(),
                 });
             entry.versions.insert(ver);
@@ -264,7 +264,7 @@ impl pkglab_common::ArtifactStore for SqliteArtifactStore {
                     versions: acc.versions.into_iter().collect(),
                     source,
                     repo: acc.repo.clone(),
-                    ref_: acc.ref_.clone(),
+                    bookmark: acc.bookmark.clone(),
                     sha: acc.sha.clone(),
                 }
             })

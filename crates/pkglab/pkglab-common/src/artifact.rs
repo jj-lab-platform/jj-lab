@@ -128,9 +128,9 @@ pub struct Artifact {
     /// (GitHub-style "linked to repository").
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub repo: String,
-    /// The workspace ref (bookmark) the artifact was published from.
+    /// The workspace bookmark (branch) the artifact was published from.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub ref_: String,
+    pub bookmark: String,
     /// The commit sha the artifact was published from (content provenance).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sha: String,

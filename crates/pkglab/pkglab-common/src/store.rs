@@ -19,9 +19,9 @@ pub struct PackageSummary {
     /// Owning source repo (org/repo), empty for pull-through caches.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub repo: String,
-    /// Workspace ref (bookmark) the artifact was published from.
+    /// The workspace bookmark (branch) the artifact was published from.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub ref_: String,
+    pub bookmark: String,
     /// Commit sha provenance.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sha: String,
