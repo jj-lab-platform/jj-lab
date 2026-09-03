@@ -641,6 +641,20 @@ mod tests {
         ) -> pkglab_common::registry::Result<Vec<pkglab_common::store::PackageSummary>> {
             Ok(vec![])
         }
+        async fn list_oci_images(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> pkglab_common::registry::Result<Vec<pkglab_common::store::PackageSummary>> {
+            Ok(vec![])
+        }
+        async fn list_artifacts(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> pkglab_common::registry::Result<Vec<pkglab_common::Artifact>> {
+            Ok(vec![])
+        }
         async fn save_upload(
             &self,
             _: pkglab_common::blob::UploadRecord,

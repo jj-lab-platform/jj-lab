@@ -61,6 +61,11 @@ pub trait ArtifactStore: Send + Sync + 'static {
     /// that source repo ("" = all); `source` filters push|pull ("" = both).
     async fn list_oci_images(&self, repo: &str, source: &str) -> Result<Vec<PackageSummary>>;
 
+    /// Every full artifact of a format+repository (with proprietary/blobs),
+    /// sorted by version. For data-rich formats (e.g. git `release`) that need
+    /// the whole body rather than a summary.
+    async fn list_artifacts(&self, format: &str, repo: &str) -> Result<Vec<Artifact>>;
+
     // -- upload session persistence (OCI chunked uploads) -------------------
 
     async fn save_upload(&self, u: UploadRecord) -> Result<()>;

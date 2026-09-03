@@ -143,6 +143,24 @@ impl Artifact {
     }
 }
 
+/// Git release metadata stored as the `proprietary` payload of an artifact
+/// with `format = "release"` (repository = `org/repo`, version = tag).
+/// Modeled on GitHub Releases (tag + name + body + draft/prerelease), while the
+/// binaries are referenced as `blobs` (content-addressed via the blob store).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReleaseMeta {
+    pub name: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub draft: bool,
+    #[serde(default)]
+    pub prerelease: bool,
+}
+
+/// The `format` value a git release is stored as in the artifact store.
+pub const FORMAT_RELEASE: &str = "release";
+
 #[cfg(test)]
 mod tests {
     use super::*;

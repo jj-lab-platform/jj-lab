@@ -25,7 +25,7 @@ pub mod store;
 pub mod upstreams;
 pub mod versioncmp;
 
-pub use artifact::{Artifact, Descriptor, Hashes};
+pub use artifact::{Artifact, Descriptor, Hashes, ReleaseMeta, FORMAT_RELEASE};
 pub use auth::{Action, Auth};
 pub use blob::{BlobStore, UploadRecord};
 pub use pullthrough::Registry;

@@ -356,6 +356,27 @@ impl pkglab_common::ArtifactStore for SqliteArtifactStore {
         Ok(out)
     }
 
+    async fn list_artifacts(
+        &self,
+        format: &str,
+        repo: &str,
+    ) -> pkglab_common::registry::Result<Vec<Artifact>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT data FROM artifacts WHERE format = ?1 AND repository = ?2 ORDER BY version")
+            .map_err(db)?;
+        let rows = stmt.query_map(params![format, repo], |r| r.get::<_, Vec<u8>>(0)).map_err(db)?;
+        let mut out = Vec::new();
+        for r in rows {
+            let data = r.map_err(db)?;
+            match decode(&data) {
+                Ok(a) => out.push(a),
+                Err(_) => {}
+            }
+        }
+        Ok(out)
+    }
+
     async fn save_upload(&self, u: UploadRecord) -> pkglab_common::registry::Result<()> {
         let data = serde_json::to_vec(&u).map_err(|e| RegistryError::Db(e.to_string()))?;
         self.conn()?
