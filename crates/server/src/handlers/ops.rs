@@ -609,17 +609,34 @@ pub async fn ops_packages(State(state): State<AppState>) -> Response {
     }
 }
 
-/// `GET /ops/images` — the OCI catalog (repository list).
-pub async fn ops_images(State(state): State<AppState>) -> Response {
+/// `GET /ops/images` — OCI image artifacts with repo-scoped origin metadata.
+///
+///   - `repo=<org/repo>` filters to images built from that source repo
+///     ("" = all; `library/*` matches pull-through caches with no owner).
+///   - `source=push|pull` filters origin ("" = both).
+///   - `all=true` returns everything including cached `library/*` base images
+///     and `sandbox/*` derived workers; without it, only `push` images with a
+///     source repo are returned (the caller's own builds).
+///
+/// Returns Artifact-level fields so clients can distinguish "images I built"
+/// from public/cached ones: `{repository, versions, source, repo, bookmark, sha}`.
+pub async fn ops_images(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let repo = q.get("repo").cloned().unwrap_or_default();
+    let source = q.get("source").cloned().unwrap_or_default();
+    let all = q.get("all").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
     match state.registry.as_ref() {
         Some(reg) => {
-            let repos = reg.meta.list_repositories_by_format("oci").await;
-            match repos {
-                Ok(r) => Json(json!({ "repositories": r })).into_response(),
+            let effective_source = if all { source.clone() } else { "push".to_string() };
+            let res = reg.meta.list_oci_images(&repo, &effective_source).await;
+            match res {
+                Ok(images) => Json(json!({ "images": images })).into_response(),
                 Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
             }
         }
-        None => Json(json!({ "repositories": [] })).into_response(),
+        None => Json(json!({ "images": [] })).into_response(),
     }
 }
 /// `GET /ops/services/{name}/pods` — the pods behind a service.

@@ -205,8 +205,7 @@ impl pkglab_common::ArtifactStore for SqliteArtifactStore {
     async fn list_packages(&self) -> pkglab_common::registry::Result<Vec<PackageSummary>> {
         let conn = self.conn()?;
         let mut stmt =
-            conn.prepare("SELECT format, repository, version, data FROM artifacts").map_err(db)?;
-        let rows = stmt
+            conn.prepare("SELECT format, repository, version, data FROM artifacts").map_err(db)?;        let rows = stmt
             .query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
@@ -270,6 +269,90 @@ impl pkglab_common::ArtifactStore for SqliteArtifactStore {
             })
             .collect();
         out.sort_by(|a, b| (&a.format, &a.repository).cmp(&(&b.format, &b.repository)));
+        Ok(out)
+    }
+
+    async fn list_oci_images(
+        &self,
+        repo: &str,
+        source: &str,
+    ) -> pkglab_common::registry::Result<Vec<PackageSummary>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT format, repository, version, data FROM artifacts WHERE format = 'oci'")
+            .map_err(db)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Vec<u8>>(3)?,
+                ))
+            })
+            .map_err(db)?;
+
+        use std::collections::BTreeMap;
+        struct Acc {
+            versions: std::collections::BTreeSet<String>,
+            source: String,
+            repo: String,
+            bookmark: String,
+            sha: String,
+        }
+        let mut by_repo: BTreeMap<(String, String), Acc> = BTreeMap::new();
+        for row in rows {
+            let (f, repo, ver, data) = row.map_err(db)?;
+            if repo.is_empty() || ver.is_empty() {
+                continue;
+            }
+            let a: Artifact = match decode(&data) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let format = if a.format.is_empty() { f } else { a.format };
+            let format = if format.is_empty() { "oci".to_string() } else { format };
+            let entry = by_repo
+                .entry((format, repo))
+                .or_insert_with(|| Acc {
+                    versions: Default::default(),
+                    source: a.source.clone(),
+                    repo: a.repo.clone(),
+                    bookmark: a.bookmark.clone(),
+                    sha: a.sha.clone(),
+                });
+            entry.versions.insert(ver);
+            if a.source == "pull" {
+                entry.source = "pull".into();
+            } else if a.source == "push" && entry.source.is_empty() {
+                entry.source = "push".into();
+            }
+        }
+
+        let mut out: Vec<PackageSummary> = by_repo
+            .into_iter()
+            .filter(|((_format, _repo), acc)| {
+                // repo filter: empty = all; else match the source repo.
+                let repo_match = repo.is_empty()
+                    || acc.repo == repo
+                    || (repo.starts_with("library/") && acc.repo.is_empty());
+                let source_match = source.is_empty() || acc.source == source;
+                repo_match && source_match
+            })
+            .map(|((format, repo), acc)| {
+                let source = if acc.source.is_empty() { "push".to_string() } else { acc.source };
+                PackageSummary {
+                    format,
+                    repository: repo,
+                    versions: acc.versions.into_iter().collect(),
+                    source,
+                    repo: acc.repo.clone(),
+                    bookmark: acc.bookmark.clone(),
+                    sha: acc.sha.clone(),
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.repository.cmp(&b.repository));
         Ok(out)
     }
 

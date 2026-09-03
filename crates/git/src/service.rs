@@ -289,6 +289,11 @@ impl ServiceClient {
                 template: k8s_openapi::api::core::v1::PodTemplateSpec {
                     metadata: Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
                         labels: Some(labels(&spec.name)),
+                        annotations: if spec.annotations.is_empty() {
+                            None
+                        } else {
+                            Some(spec.annotations.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                        },
                         ..Default::default()
                     }),
                     spec: Some(PodSpec {
@@ -389,21 +394,17 @@ impl ServiceClient {
             out.push(serde_json::json!({
                 "name": name, "kind": "deployment", "replicas": replicas,
                 "namespace": ns,
+                "annotations": d.metadata.annotations.clone().unwrap_or_default(),
             }));
         }
         for p in self.pods(ns).list(&lp).await.map_err(|e| RepoError::Other(format!("list pods: {e}")))?.items {
             let name = p.metadata.name.clone().unwrap_or_default();
             let phase = p.status.as_ref().and_then(|s| s.phase.clone()).unwrap_or_default();
             let pod_ip = p.status.as_ref().and_then(|s| s.pod_ip.clone()).unwrap_or_default();
-            let session = p
-                .metadata
-                .annotations
-                .as_ref()
-                .and_then(|a| a.get("zergx/session").cloned())
-                .unwrap_or_default();
             out.push(serde_json::json!({
                 "name": name, "kind": "bare", "phase": phase, "namespace": ns,
-                "pod_ip": pod_ip, "session": session,
+                "pod_ip": pod_ip,
+                "annotations": p.metadata.annotations.clone().unwrap_or_default(),
             }));
         }
         Ok(out)
@@ -425,6 +426,7 @@ impl ServiceClient {
                 ready,
                 phase: String::new(),
                 pod_ip,
+                annotations: d.metadata.annotations.clone().unwrap_or_default(),
             });
         }
         if let Ok(p) = self.pods(ns).get(name).await {
@@ -443,6 +445,7 @@ impl ServiceClient {
                 ready,
                 phase,
                 pod_ip,
+                annotations: p.metadata.annotations.clone().unwrap_or_default(),
             });
         }
         Err(RepoError::NotFound { org: ns.to_string(), repo: name.to_string() })
@@ -508,6 +511,10 @@ pub struct ServiceStatus {
     /// First container port on the pod IP: `http://<pod-ip>:<port>`. Empty
     /// until the pod is scheduled and its IP is assigned.
     pub pod_ip: String,
+    /// Opaque annotations carried on the object (jjlab does not interpret
+    /// them; the caller owns any session/purpose semantics).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub annotations: BTreeMap<String, String>,
 }
 
 impl ServiceStatus {
