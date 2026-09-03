@@ -97,9 +97,8 @@ impl OciAdapter {
                 if let Some(u) = map.get(&host) {
                     return Some(u.clone());
                 }
-                let proxy = self.state.upstreams.proxy_url(&host);
                 let u =
-                    upstream::Upstream::for_registry(&self.state.upstreams.factory(), &host, proxy);
+                    upstream::Upstream::for_registry(&self.state.upstreams.factory(), &host);
                 map.insert(host, u.clone());
                 Some(u)
             }
@@ -107,9 +106,7 @@ impl OciAdapter {
     }
 
     fn make_upstream(&self, base: &str) -> upstream::Upstream {
-        // OCI uses its own upstream entry ("oci") for proxy policy.
-        let proxy = self.state.upstreams.proxy_url("oci");
-        upstream::Upstream::new(&self.state.upstreams.factory(), base, proxy)
+        upstream::Upstream::new(&self.state.upstreams.factory(), base)
     }
 
     fn error(status: StatusCode, code: &str, message: &str) -> Response {

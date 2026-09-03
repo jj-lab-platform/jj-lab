@@ -39,33 +39,28 @@ impl Registry {
         self.upstreams.sub(format, sub)
     }
 
-    /// A [`Remote`] for a format's primary upstream honoring its proxy policy.
+    /// A [`Remote`] for a format's primary upstream.
     pub fn remote(&self, format: &str, base: Option<&str>) -> Option<Remote> {
         let base = base.map(|s| s.to_string()).or_else(|| self.upstream(format))?;
-        let proxy = self.upstreams.proxy_url(format);
-        Some(Remote::new(&self.upstreams.factory(), &base, proxy.as_deref()))
+        Some(Remote::new(&self.upstreams.factory(), &base))
     }
 
-    /// A [`Remote`] for a sub-endpoint honoring its proxy policy.
+    /// A [`Remote`] for a sub-endpoint.
     pub fn remote_sub(&self, format: &str, sub: &str) -> Option<Remote> {
         let base = self.upstream_sub(format, sub)?;
-        let proxy = self.upstreams.proxy_url(&format!("{format}.{sub}"));
-        Some(Remote::new(&self.upstreams.factory(), &base, proxy.as_deref()))
+        Some(Remote::new(&self.upstreams.factory(), &base))
     }
 
-    /// A [`Remote`] against an arbitrary absolute base with a format's proxy
-    /// policy.
+    /// A [`Remote`] against an arbitrary absolute base.
     pub fn remote_at(&self, format: &str, base: &str) -> Remote {
-        let proxy = self.upstreams.proxy_url(format);
-        Remote::new(&self.upstreams.factory(), base, proxy.as_deref())
+        let _ = format;
+        Remote::new(&self.upstreams.factory(), base)
     }
 
     /// Fetch content from an absolute URL, store it (dedup by sha256), and
     /// return bytes + hashes. The URL is used verbatim.
     pub async fn fetch_absolute(&self, url: &str) -> Result<Fetched> {
-        // Proxy policy: use a bare "generic" key when the format is unknown.
-        let proxy = self.upstreams.proxy_url("generic");
-        let remote = Remote::new(&self.upstreams.factory(), "", proxy.as_deref());
+        let remote = Remote::new(&self.upstreams.factory(), "");
         let resp = remote.get(url).await.map_err(|e| RegistryError::Http(e.to_string()))?;
         let status = resp.status();
         if !status.is_success() {

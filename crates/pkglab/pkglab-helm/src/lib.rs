@@ -71,11 +71,9 @@ async fn index_yaml(State(st): State<Arc<HelmState>>, _headers: HeaderMap) -> Re
     // pull-through mirror. Upstream URLs are rewritten to self.
     let upstream = st.registry.upstream("helm");
     if let Some(up_base) = upstream {
-        let proxy = st.registry.upstreams.proxy_url("helm");
         let remote = pkglab_common::remote::Remote::new(
             &st.registry.upstreams.factory(),
             &up_base,
-            proxy.as_deref(),
         );
         if let Ok(bytes) = remote.get_bytes("/index.yaml").await {
             let text = String::from_utf8_lossy(&bytes).to_string();

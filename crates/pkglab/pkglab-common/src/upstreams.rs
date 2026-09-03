@@ -1,13 +1,13 @@
-//! Runtime upstream registry: format → base URL overrides, dotted
-//! `format.sub` sub-endpoint overrides, and per-key proxy policy.
+//! Runtime upstream registry: format → base URL overrides and dotted
+//! `format.sub` sub-endpoint overrides.
 //!
 //! A key is either a bare format name (`npm`, `pypi`) or a dotted
 //! sub-endpoint (`cargo.static`, `nuget.search`). The bare key is the
 //! format's primary upstream; dotted keys override only a specific endpoint.
 //!
-//! Proxy policy: a value present for a key means "use this proxy URL" (empty
-//! string = direct); resolution walks from the dotted key up to the bare
-//! format. Absent = environment proxy.
+//! Upstreams only carry the base URL. Proxy config is not managed here — all
+//! upstream requests honor the ambient `HTTP(S)_PROXY`/`NO_PROXY` environment
+//! variables via [`crate::remote::ClientFactory`].
 
 use crate::remote::ClientFactory;
 use serde::{Deserialize, Serialize};
@@ -64,27 +64,14 @@ pub const SUB_KEYS: &[&str] = &[
     "rubygems.gems",
 ];
 
-/// How a key's proxy resolves.
-#[derive(Debug, Clone, Serialize)]
-pub struct ProxyState {
-    pub key: String,
-    /// Effective proxy URL ("" means direct).
-    pub proxy: String,
-    /// True when the key has an explicit setting.
-    pub explicit: bool,
-}
-
 #[derive(Default, Serialize, Deserialize)]
 struct Persisted {
     #[serde(default)]
     upstreams: BTreeMap<String, String>,
-    #[serde(default)]
-    proxy: BTreeMap<String, String>,
 }
 
 struct Inner {
     overrides: BTreeMap<String, String>,
-    proxy: BTreeMap<String, String>,
 }
 
 /// Thread-safe runtime upstream table with optional JSON file persistence.
@@ -96,12 +83,11 @@ pub struct Upstreams {
 }
 
 impl Upstreams {
-    /// Create the table. `path` enables JSON persistence of overrides+proxy.
+    /// Create the table. `path` enables JSON persistence of overrides.
     pub fn new(path: Option<PathBuf>) -> Self {
         let u = Self {
             inner: std::sync::Arc::new(Mutex::new(Inner {
                 overrides: BTreeMap::new(),
-                proxy: BTreeMap::new(),
             })),
             path: std::sync::Arc::new(path),
             factory: std::sync::Arc::new(ClientFactory::new()),
@@ -161,36 +147,6 @@ impl Upstreams {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).overrides.contains_key(key.trim())
     }
 
-    /// Store the per-key proxy URL (empty string = direct).
-    pub fn set_proxy(&self, key: &str, value: &str) {
-        let key = key.trim();
-        if key.is_empty() {
-            return;
-        }
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .proxy
-            .insert(key.to_string(), value.trim().to_string());
-        self.save();
-    }
-
-    /// The proxy URL configured for a key (walking dotted parents), or `None`
-    /// when unset (environment proxy). `Some("")` = direct.
-    pub fn proxy_url(&self, key: &str) -> Option<String> {
-        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let mut k = key;
-        loop {
-            if let Some(v) = inner.proxy.get(k) {
-                return Some(v.clone());
-            }
-            match k.rsplit_once('.') {
-                Some((parent, _)) if !parent.is_empty() => k = parent,
-                _ => return None,
-            }
-        }
-    }
-
     /// Snapshot of all effective upstreams (bare formats + sub endpoints).
     pub fn all(&self) -> BTreeMap<String, String> {
         let mut out = BTreeMap::new();
@@ -212,29 +168,13 @@ impl Upstreams {
         out
     }
 
-    /// Full proxy policy for every known key.
-    pub fn all_proxy_states(&self) -> Vec<ProxyState> {
-        let mut keys: Vec<String> = self.all().keys().cloned().collect();
-        keys.sort();
-        keys.into_iter()
-            .map(|key| {
-                let explicit = self.proxy_url(&key);
-                ProxyState {
-                    proxy: explicit.clone().unwrap_or_default(),
-                    explicit: explicit.is_some(),
-                    key,
-                }
-            })
-            .collect()
-    }
-
     fn save(&self) {
         if let Some(path) = self.path.as_ref() {
-            let (overrides, proxy) = {
+            let overrides = {
                 let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-                (inner.overrides.clone(), inner.proxy.clone())
+                inner.overrides.clone()
             };
-            let state = Persisted { upstreams: overrides, proxy };
+            let state = Persisted { upstreams: overrides };
             if let Some(dir) = path.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
@@ -257,9 +197,6 @@ impl Upstreams {
                 if !v.is_empty() {
                     inner.overrides.insert(k, v);
                 }
-            }
-            for (k, v) in state.proxy {
-                inner.proxy.insert(k, v);
             }
         }
     }
@@ -287,17 +224,5 @@ mod tests {
         assert_eq!(u.sub("cargo", "nope"), None);
         u.set("cargo.static", "https://mirror/static");
         assert_eq!(u.sub("cargo", "static").unwrap(), "https://mirror/static");
-    }
-
-    #[test]
-    fn proxy_walk() {
-        let u = Upstreams::new(None);
-        assert_eq!(u.proxy_url("npm"), None); // environment
-        u.set_proxy("npm", ""); // direct
-        assert_eq!(u.proxy_url("npm"), Some("".into()));
-        u.set_proxy("nuget.search", "http://p:1");
-        assert_eq!(u.proxy_url("nuget.search"), Some("http://p:1".into()));
-        u.set_proxy("nuget", "http://p2:2");
-        assert_eq!(u.proxy_url("nuget.registration"), Some("http://p2:2".into()));
     }
 }

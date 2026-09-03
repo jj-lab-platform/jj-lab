@@ -39,13 +39,12 @@ pub struct Upstream {
     scheme: String,
     host: String,
     factory: ClientFactory,
-    proxy: Option<String>,
     tokens: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl Upstream {
     /// Parse a host string with or without a scheme.
-    pub fn new(factory: &ClientFactory, host: &str, proxy: Option<String>) -> Self {
+    pub fn new(factory: &ClientFactory, host: &str) -> Self {
         let mut scheme = "https".to_string();
         let mut h = host.to_string();
         for p in ["https://", "http://"] {
@@ -59,7 +58,6 @@ impl Upstream {
             scheme,
             host: h,
             factory: factory.clone(),
-            proxy,
             tokens: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -67,7 +65,7 @@ impl Upstream {
     /// Build an upstream for an explicitly prefixed registry host. https is
     /// assumed except for localhost/IP literals (insecure-registry
     /// convention).
-    pub fn for_registry(factory: &ClientFactory, host: &str, proxy: Option<String>) -> Self {
+    pub fn for_registry(factory: &ClientFactory, host: &str) -> Self {
         // The host may itself embed a scheme already (rare); normalize.
         let mut h = host.to_string();
         let mut scheme_override: Option<String> = None;
@@ -93,7 +91,6 @@ impl Upstream {
             scheme,
             host: h,
             factory: factory.clone(),
-            proxy,
             tokens: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -110,7 +107,7 @@ impl Upstream {
     }
 
     fn client(&self) -> reqwest::Client {
-        self.factory.client(self.proxy.as_deref())
+        self.factory.client()
     }
 
     /// GET a path under /v2 with the given scope, transparently retrying once

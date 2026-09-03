@@ -1,24 +1,24 @@
-//! Proxy-aware upstream HTTP client factory plus a small protocol-agnostic
-//! remote handle. Mirrors the Go `core.Remote` semantics:
-//! - one shared client per proxy policy (env / direct / explicit URL),
+//! Upstream HTTP client factory plus a small protocol-agnostic remote handle.
+//! Mirrors the Go `core.Remote` semantics:
+//! - one shared client for all upstream requests, following the ambient
+//!   `HTTP(S)_PROXY` / `NO_PROXY` environment variables (no per-key override),
 //! - no overall body timeout (large blobs stream for minutes),
 //! - custom User-Agent (Maven Central 429s the default Go UA).
+//!
+//! The client is intentionally proxy-agnostic: proxy config lives solely in
+//! the container environment, so a single cached client is shared everywhere.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// User-Agent sent on every upstream request.
 pub const USER_AGENT: &str = "pkglab/1.0 (pull-through mirror)";
 
-/// Build (and cache) a reqwest client for a proxy policy.
-///
-/// * `None`            -> follow the environment proxy configuration
-/// * `Some("")`        -> direct connection (environment proxy bypassed)
-/// * `Some(url)`       -> always route through the given proxy
+/// Build (and cache) a single reqwest client that follows the environment
+/// proxy configuration (`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`).
 #[derive(Clone)]
 pub struct ClientFactory {
-    cache: Arc<Mutex<HashMap<String, reqwest::Client>>>,
+    cache: Arc<Mutex<Option<reqwest::Client>>>,
 }
 
 impl Default for ClientFactory {
@@ -29,40 +29,32 @@ impl Default for ClientFactory {
 
 impl ClientFactory {
     pub fn new() -> Self {
-        Self { cache: Arc::new(Mutex::new(HashMap::new())) }
+        Self { cache: Arc::new(Mutex::new(None)) }
     }
 
-    pub fn client(&self, proxy: Option<&str>) -> reqwest::Client {
-        let key = proxy.unwrap_or("__env__").to_string();
-        if let Some(c) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-            return c.clone();
+    pub fn client(&self) -> reqwest::Client {
+        let mut c = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(client) = c.as_ref() {
+            return client.clone();
         }
-        let mut builder = reqwest::Client::builder()
+        // No explicit proxy()/no_proxy(): reqwest reads the environment proxy
+        // configuration by default.
+        let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(120))
             // No overall request timeout: bodies stream without a deadline.
             .pool_idle_timeout(Duration::from_secs(90))
-            .pool_max_idle_per_host(20);
-        match proxy {
-            None => {}
-            Some("") => builder = builder.no_proxy(),
-            Some(u) => {
-                if let Ok(pu) = reqwest::Proxy::all(u) {
-                    builder = builder.proxy(pu);
-                } else {
-                    builder = builder.no_proxy();
-                }
-            }
-        }
-        let client = builder.build().unwrap_or_default();
-        self.cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, client.clone());
+            .pool_max_idle_per_host(20)
+            .build()
+            .unwrap_or_default();
+        *c = Some(client.clone());
         client
     }
 }
 
-/// A remote upstream root URL with an optional explicit proxy. Each adapter
-/// maps its own URL layout onto [`Remote::get`] / [`Remote::get_cached`].
+/// A remote upstream root URL. Each adapter maps its own URL layout onto
+/// [`Remote::get`] / [`Remote::get_cached`].
 #[derive(Clone)]
 pub struct Remote {
     base: String,
@@ -71,12 +63,12 @@ pub struct Remote {
 }
 
 impl Remote {
-    /// Create a remote. `base` is trimmed of trailing slashes. `proxy` follows
-    /// the [`ClientFactory`] convention; `None` uses the environment proxy.
-    pub fn new(factory: &ClientFactory, base: &str, proxy: Option<&str>) -> Self {
+    /// Create a remote. `base` is trimmed of trailing slashes. All requests go
+    /// through the environment-configured proxy (see [`ClientFactory::client`]).
+    pub fn new(factory: &ClientFactory, base: &str) -> Self {
         Self {
             base: base.trim_end_matches('/').to_string(),
-            client: factory.client(proxy),
+            client: factory.client(),
             extra_headers: Vec::new(),
         }
     }
