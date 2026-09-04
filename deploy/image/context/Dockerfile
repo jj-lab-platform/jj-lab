@@ -6,7 +6,7 @@
 # alpine base via apk. The frontend is embedded in the jjlab binary at compile
 # time, so no npm/node stage is needed here. Apk runs through the ambient
 # HTTP proxy (passed as build-args) to mirrors.aliyun.com.
-FROM jj-lab.temp.svc.cluster.local/library/alpine:3
+FROM docker.io/library/alpine:3
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc
@@ -30,6 +30,6 @@ ENV JJLAB_PORT=8080 \
     JJLAB_LOGS=/data/logs \
     JJLAB_CI_NAMESPACE=temp \
     JJLAB_BUILDKIT_ADDR=tcp://buildkitd.temp.svc.cluster.local:1234 \
-    JJLAB_CI_IMAGE=jj-lab.temp.svc.cluster.local/library/alpine:3
+    JJLAB_CI_IMAGE=docker.io/library/alpine:3
 EXPOSE 8080
 ENTRYPOINT ["/opt/jjlab/jjlab"]
