@@ -974,10 +974,11 @@ pub struct GraphNode {
     pub parents: Vec<String>,
     pub edge_types: Vec<String>,
     pub is_head: bool,
+    pub bookmarks: Vec<String>,
 }
 
 impl GraphNode {
-    pub fn new(c: &Commit, is_head: bool) -> Self {
+    pub fn new(c: &Commit, is_head: bool, bookmarks: Vec<String>) -> Self {
         let parents: Vec<String> = c.parent_ids().iter().map(|p| p.hex()).collect();
         let edge_types = vec!["direct".to_string(); parents.len()];
         GraphNode {
@@ -988,6 +989,7 @@ impl GraphNode {
             parents,
             edge_types,
             is_head,
+            bookmarks,
         }
     }
 }
@@ -1010,6 +1012,18 @@ pub async fn change_graph(
         .filter(|h| **h != root_id)
         .cloned()
         .collect();
+
+    // Map each commit-id hex -> local bookmark names pointing at it.
+    let mut bookmark_map: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for (name, target) in repo.view().local_bookmarks() {
+        if let Some(id) = target.as_normal() {
+            bookmark_map
+                .entry(id.hex())
+                .or_default()
+                .push(name.as_str().to_string());
+        }
+    }
 
     // Walk from heads; collect parents via DFS with cycle protection.
     let mut seen = std::collections::HashSet::new();
@@ -1039,7 +1053,10 @@ pub async fn change_graph(
     // node's own parents encode "direct" edges; skip passed-edge complexity.
     Ok(commits
         .into_iter()
-        .map(|c| GraphNode::new(&c, is_head_map.get(&c.id().hex()).copied().unwrap_or(false)))
+        .map(|c| {
+            let bms = bookmark_map.get(&c.id().hex()).cloned().unwrap_or_default();
+            GraphNode::new(&c, is_head_map.get(&c.id().hex()).copied().unwrap_or(false), bms)
+        })
         .collect())
 }
 
