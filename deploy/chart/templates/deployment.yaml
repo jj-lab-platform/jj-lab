@@ -80,6 +80,10 @@ spec:
               value: {{ .Values.selfUrl | quote }}
             - name: JJLAB_OPS_NAMESPACES
               value: {{ .Values.opsNamespaces | quote }}
+            {{- if .Values.sandboxWorkerRef }}
+            - name: JJLAB_SANDBOX_WORKER_REF
+              value: {{ .Values.sandboxWorkerRef | quote }}
+            {{- end }}
             - name: DOCKER_CONFIG
               value: /etc/jjlab-docker
           readinessProbe:

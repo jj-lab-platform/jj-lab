@@ -53,6 +53,11 @@ rustLog: info
 # --- /ops target namespaces (comma list; registry is in-memory) ---
 opsNamespaces: "temp"
 
+# Sandbox derive worker image ref (COPIED into the sandbox image). Defaults to
+# ":latest" on the fallback host; set explicitly per environment so a
+# deployed jjlab derives workers from ITS OWN registry, not another namespace's.
+sandboxWorkerRef: ""
+
 # --- self URL: in-cluster address CI pods fetch repo snapshots from ---
 selfUrl: "http://jj-lab.temp.svc.cluster.local"
 
