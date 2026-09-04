@@ -17,7 +17,7 @@ pub async fn rebase_handler(
     let db = state.db.clone();
     let (source, dest) = (body.source.clone(), body.dest.clone());
     let outcome = match run_jj(move || {
-        pollster::block_on(jjlab_git::mutation::rebase_branch(
+        pollster::block_on(jjlab_git::mutation::rebase_bookmark(
             &store, &db, &org, &repo, &source, &dest,
         ))
     })
@@ -38,7 +38,7 @@ pub async fn commits(State(state): State<AppState>, Path((org, repo)): Path<(Str
     let store = state.store.clone();
     let db = state.db.clone();
     let author = server_author();
-    let branch = body.branch.clone();
+    let bookmark = body.bookmark.clone();
     let message = if body.message.is_empty() {
         "commit".to_string()
     } else {
@@ -65,7 +65,7 @@ pub async fn commits(State(state): State<AppState>, Path((org, repo)): Path<(Str
     // deletes are combined into one MergedTreeBuilder. Either all land or, on
     // any sha/base conflict, nothing is written (409).
     let s2 = store.clone(); let d2 = db.clone();
-    let o2 = org.clone(); let r2 = repo.clone(); let b2 = branch.clone();
+    let o2 = org.clone(); let r2 = repo.clone(); let b2 = bookmark.clone();
     let m2 = message.clone(); let a2 = author.clone();
     let e = match run_jj(move || {
         pollster::block_on(jjlab_git::mutation::commit_edits(
@@ -88,10 +88,10 @@ pub async fn create_repo(
     let db = state.db.clone();
     let author = server_author();
     let (o2, r2) = (org.clone(), repo.clone());
-    let default_branch = body.default_branch.clone();
+    let default_bookmark = body.default_bookmark.clone();
     let res = run_jj(move || {
         pollster::block_on(jjlab_git::mutation::create_repo(
-            &store, &db, &org, &repo, &default_branch, author,
+            &store, &db, &org, &repo, &default_bookmark, author,
         ))
     })
     .await;
@@ -180,10 +180,10 @@ pub async fn rename_repo(
     }
 }
 
-pub async fn set_branch_handler(
+pub async fn set_bookmark_handler(
     State(state): State<AppState>,
     Path((org, repo, name)): Path<(String, String, String)>,
-    Json(body): Json<BranchBody>,
+    Json(body): Json<BookmarkBody>,
 ) -> Response {
     let store = state.store.clone();
     let db = state.db.clone();
@@ -191,7 +191,7 @@ pub async fn set_branch_handler(
     let target = body.target.clone();
     let change = body.change.clone();
     let sha = match run_jj(move || {
-        pollster::block_on(jjlab_git::mutation::set_branch(
+        pollster::block_on(jjlab_git::mutation::set_bookmark(
             &store, &db, &org, &repo, &name, &target, &change,
         ))
     })
@@ -203,14 +203,14 @@ pub async fn set_branch_handler(
     Json(json!({ "name": n2, "sha": sha })).into_response()
 }
 
-pub async fn delete_branch_handler(
+pub async fn delete_bookmark_handler(
     State(state): State<AppState>,
     Path((org, repo, name)): Path<(String, String, String)>,
 ) -> Response {
     let store = state.store.clone();
     let db = state.db.clone();
     match run_jj(move || {
-        pollster::block_on(jjlab_git::mutation::delete_branch(&store, &db, &org, &repo, &name))
+        pollster::block_on(jjlab_git::mutation::delete_bookmark(&store, &db, &org, &repo, &name))
     })
     .await
     {
@@ -284,8 +284,8 @@ pub struct CommitAction {
 /// Request body for `POST /repos/{org}/{repo}/commits`.
 #[derive(serde::Deserialize)]
 pub struct CommitsBody {
-    #[serde(default = "default_branch")]
-    pub branch: String,
+    #[serde(default = "default_bookmark")]
+    pub bookmark: String,
     #[serde(default)]
     pub message: String,
     #[serde(default = "default_amend")]

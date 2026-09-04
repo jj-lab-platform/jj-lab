@@ -18,7 +18,7 @@ export interface ChangeSummary {
   author: string
 }
 
-export interface BranchInfo {
+export interface BookmarkInfo {
   name: string
   sha: string
 }
@@ -61,7 +61,6 @@ export interface Conflict {
 
 export interface DbBookmark {
   name: string
-  change_id: string
   is_remote: boolean
 }
 

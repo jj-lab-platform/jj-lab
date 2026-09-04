@@ -19,7 +19,7 @@
         <div class="flex size-8 items-center justify-center rounded bg-[var(--gitea-box-header)] text-[var(--gitea-text)]"><BookOpen class="size-4" /></div>
         <div class="min-w-0 flex-1">
           <div class="text-base font-semibold hover:text-primary">{r.repo}</div>
-          <div class="g-subtle">default branch: {r.default_bookmark}</div>
+          <div class="g-subtle">default bookmark: {r.default_bookmark}</div>
         </div>
         <ChevronRight class="size-4 g-muted" />
       </a>

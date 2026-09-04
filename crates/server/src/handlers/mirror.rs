@@ -11,13 +11,13 @@ pub async fn clone_remote(
     Json(body): Json<SyncBody>,
 ) -> Response {
     let url = body.url.clone();
-    let branch = body.branch.clone();
+    let bookmark = body.bookmark.clone();
     let store = state.store.clone();
     let db = state.db.clone();
     let head = match run_jj(move || {
         pollster::block_on(async {
             let head =
-                jjlab_git::sync::clone_remote(&store, &db, &org, &repo, &url, branch.as_deref())
+                jjlab_git::sync::clone_remote(&store, &db, &org, &repo, &url, bookmark.as_deref())
                     .await?;
             jjlab_git::project::project_repo(&store, &db, &org, &repo).await?;
             Ok(head)

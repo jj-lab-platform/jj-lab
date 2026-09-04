@@ -76,8 +76,8 @@ async fn resolve_commit_by_full_sha_short_prefix_bookmark_and_root() {
     let got = jjlab_git::read::resolve_snapshot(&repo, short).unwrap();
     assert_eq!(got.hex(), sha1);
     // Bookmark name.
-    let branches = jjlab_git::read::branches(&store, "o", "r").await.unwrap();
-    let bm = &branches[0].name;
+    let bookmarks = jjlab_git::read::bookmarks(&store, "o", "r").await.unwrap();
+    let bm = &bookmarks[0].name;
     assert!(jjlab_git::read::resolve_snapshot(&repo, bm).is_ok());
     // Ambiguous 1-char prefix → error (multiple commits share the first hex char
     // only if both start with the same digit; 1-char prefixes are near-certainly

@@ -75,7 +75,7 @@
     <div class="g-card mb-4 space-y-2 p-4">
       <Input.Root placeholder="title" bind:value={app.newMrTitle} />
       <div class="flex gap-2">
-        <Input.Root class="flex-1" placeholder="head branch" bind:value={app.newMrHead} />
+        <Input.Root class="flex-1" placeholder="head bookmark" bind:value={app.newMrHead} />
         <Input.Root class="flex-1" placeholder="base (main)" bind:value={app.newMrBase} />
       </div>
       <Textarea.Root placeholder="description" bind:value={app.newMrBody} />

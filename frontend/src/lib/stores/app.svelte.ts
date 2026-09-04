@@ -1,13 +1,13 @@
 import {
-  fetchOrgs, fetchBranches, fetchTags, fetchCommits, fetchCommit, fetchChanges,
-  fetchTree, fetchFile, fetchRawFile, fetchDiff, fetchGraph, fetchFileLog,
+  fetchOrgs, fetchBookmarks, fetchTags, fetchCommits, fetchCommit, fetchChanges,
+  fetchContents, fetchFile, fetchRawFile, fetchDiff, fetchGraph, fetchFileLog,
   fetchConflicts,
-  createRepo, deleteRepo, writeFile, createFile, deleteFile, createBranch,
-  deleteBranch, createTag, deleteTag, cloneRemote, fetchMrs, fetchMr, createMr,
+  createRepo, deleteRepo, writeFile, createFile, deleteFile, createBookmark,
+  deleteBookmark, createTag, deleteTag, cloneRemote, fetchMrs, fetchMr, createMr,
   updateMrState, fetchReviews, addReview, fetchComments, addComment, fetchMrDiff,
   fetchReleases, createRelease, deleteRelease, fetchWorkflows, dispatchWorkflow,
   fetchRuns, fetchJobs, fetchJobLogs, decodeContent,
-  type Org, type CommitInfo, type BranchInfo, type GraphNode, type Mr,
+  type Org, type CommitInfo, type BookmarkInfo, type GraphNode, type Mr,
   type MrReview, type MrComment, type Release, type Workflow, type Run, type Job,
   type Conflict, type ChangeSummary,
 } from '$lib/api'
@@ -91,7 +91,7 @@ class AppStore {
   importOrg = $state('')
   importRepoName = $state('')
   importUrl = $state('')
-  importBranch = $state('')
+  importBookmark = $state('')
   working = $state(false)
 
   async doCreateRepo(): Promise<void> {
@@ -117,7 +117,7 @@ class AppStore {
     if (!this.importOrg || !this.importRepoName || !this.importUrl) return
     this.working = true
     try {
-      await cloneRemote(this.importOrg, this.importRepoName, this.importUrl, this.importBranch || undefined)
+      await cloneRemote(this.importOrg, this.importRepoName, this.importUrl, this.importBookmark || undefined)
       this.importOpen = false
       const org = this.importOrg
       const repo = this.importRepoName
@@ -136,9 +136,9 @@ class AppStore {
   }
 
   // ── repository context ──
-  branch = $state('')
-  branches: BranchInfo[] = $state([])
-  tags: BranchInfo[] = $state([])
+  bookmark = $state('')
+  bookmarks: BookmarkInfo[] = $state([])
+  tags: BookmarkInfo[] = $state([])
   tree: { name: string; path: string; is_dir: boolean; size: number }[] = $state([])
   commits: CommitInfo[] = $state([])
   commitTotal = $state(0)
@@ -153,14 +153,14 @@ class AppStore {
     this.loading = true
     this.error = null
     try {
-      const bs = await fetchBranches(org, repo)
-      this.branches = bs
-      if (this.branches.length && !this.branch) {
-        this.branch = this.branches.find((b) => b.name === 'main')?.name ?? this.branches[0]!.name
-      } else if (this.branches.length === 0) {
-        this.branch = 'main'
-      } else if (!this.branches.some((b) => b.name === this.branch)) {
-        this.branch = this.branches[0]!.name
+      const bs = await fetchBookmarks(org, repo)
+      this.bookmarks = bs
+      if (this.bookmarks.length && !this.bookmark) {
+        this.bookmark = this.bookmarks.find((b) => b.name === 'main')?.name ?? this.bookmarks[0]!.name
+      } else if (this.bookmarks.length === 0) {
+        this.bookmark = 'main'
+      } else if (!this.bookmarks.some((b) => b.name === this.bookmark)) {
+        this.bookmark = this.bookmarks[0]!.name
       }
       this.tags = []
       try {
@@ -179,18 +179,20 @@ class AppStore {
 
   async loadTree(): Promise<void> {
     const { org, repo } = this.route
-    if (!org || !repo || !this.branch) return
+    if (!org || !repo || !this.bookmark) return
     try {
-      const raw = await fetchTree(org, repo, this.branch || 'main')
+      const raw = await fetchContents(org, repo, this.bookmark || 'main', '')
       this.tree = raw.map((e) => ({
         name: e.path.split('/').pop() ?? e.path,
         path: e.path,
         is_dir: e.kind === 'tree',
         size: e.size,
       }))
+      this.loadedDirs = new Set([''])
       await this.loadReadme()
     } catch {
       this.tree = []
+      this.loadedDirs = new Set([''])
     }
   }
 
@@ -219,6 +221,7 @@ class AppStore {
 
   // ── files tab ──
   expandedDirs: Set<string> = $state(new Set(['']))
+  loadedDirs: Set<string> = $state(new Set(['']))
   selectedPath: string | null = $state(null)
   fileData: { content: string; encoding: string; size: number } | null = $state(null)
   editing = $state(false)
@@ -253,7 +256,7 @@ class AppStore {
     this.editing = false
     this.fileData = null
     try {
-      const f = await fetchFile(org, repo, this.branch || 'main', path)
+      const f = await fetchFile(org, repo, this.bookmark || 'main', path)
       this.fileData = { content: decodeContent(f), encoding: f.encoding, size: f.size }
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e)
@@ -271,7 +274,7 @@ class AppStore {
     const { org, repo } = this.route
     if (!org || !repo || !this.selectedPath) return
     try {
-      await writeFile(org, repo, this.branch || 'main', this.selectedPath, this.editContent, this.editMessage || `update ${this.selectedPath}`, this.editAmend)
+      await writeFile(org, repo, this.bookmark || 'main', this.selectedPath, this.editContent, this.editMessage || `update ${this.selectedPath}`, this.editAmend)
       this.fileData = { content: this.editContent, encoding: 'utf-8', size: this.editContent.length }
       this.editing = false
       await Promise.all([this.loadTree(), this.loadCommits(this.commitPage)])
@@ -286,7 +289,7 @@ class AppStore {
     if (!org || !repo || !this.selectedPath) return
     if (!confirm(`Delete ${this.selectedPath}?`)) return
     try {
-      await deleteFile(org, repo, this.branch || 'main', this.selectedPath, `delete ${this.selectedPath}`)
+      await deleteFile(org, repo, this.bookmark || 'main', this.selectedPath, `delete ${this.selectedPath}`)
       this.selectedPath = null
       this.fileData = null
       await Promise.all([this.loadTree(), this.loadCommits(this.commitPage)])
@@ -306,26 +309,49 @@ class AppStore {
     }
   }
 
-  toggleDir(path: string): void {
+  async toggleDir(path: string): Promise<void> {
     const next = new Set(this.expandedDirs)
-    if (next.has(path)) next.delete(path)
-    else next.add(path)
+    if (next.has(path)) {
+      next.delete(path)
+      this.expandedDirs = next
+      return
+    }
+    next.add(path)
     this.expandedDirs = next
+    if (this.loadedDirs.has(path)) return
+    const { org, repo } = this.route
+    if (!org || !repo || !this.bookmark) return
+    try {
+      const raw = await fetchContents(org, repo, this.bookmark || 'main', path)
+      const existing = new Set(this.tree.map((e) => e.path))
+      const children = raw
+        .map((e) => ({
+          name: e.path.split('/').pop() ?? e.path,
+          path: `${path}${path ? '/' : ''}${e.path}`,
+          is_dir: e.kind === 'tree',
+          size: e.size,
+        }))
+        .filter((e) => !existing.has(e.path))
+      this.tree = [...this.tree, ...children]
+      this.loadedDirs.add(path)
+    } catch {
+      this.loadedDirs.add(path)
+    }
   }
 
   // ── branches / tags tab ──
-  newBranchFrom = $state('')
-  newBranchName = $state('')
+  newBookmarkFrom = $state('')
+  newBookmarkName = $state('')
   newTagFrom = $state('')
   newTagName = $state('')
 
-  async doCreateBranch(): Promise<void> {
+  async doCreateBookmark(): Promise<void> {
     const { org, repo } = this.route
-    if (!org || !repo || !this.newBranchName) return
+    if (!org || !repo || !this.newBookmarkName) return
     try {
-      await createBranch(org, repo, this.newBranchName, this.newBranchFrom || this.branch || 'main')
-      this.newBranchName = ''
-      this.newBranchFrom = ''
+      await createBookmark(org, repo, this.newBookmarkName, this.newBookmarkFrom || this.bookmark || 'main')
+      this.newBookmarkName = ''
+      this.newBookmarkFrom = ''
       await this.refreshRepo()
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e)
@@ -336,7 +362,7 @@ class AppStore {
     const { org, repo } = this.route
     if (!org || !repo || !this.newTagName) return
     try {
-      await createTag(org, repo, this.newTagName, this.newTagFrom || this.branch || 'main')
+      await createTag(org, repo, this.newTagName, this.newTagFrom || this.bookmark || 'main')
       this.newTagName = ''
       this.newTagFrom = ''
       this.tags = await fetchTags(org, repo)
@@ -345,12 +371,12 @@ class AppStore {
     }
   }
 
-  async doDeleteBranch(name: string): Promise<void> {
+  async doDeleteBookmark(name: string): Promise<void> {
     const { org, repo } = this.route
     if (!org || !repo) return
-    if (!confirm(`Delete branch ${name}?`)) return
+    if (!confirm(`Delete bookmark ${name}?`)) return
     try {
-      await deleteBranch(org, repo, name)
+      await deleteBookmark(org, repo, name)
       await this.refreshRepo()
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e)
@@ -398,7 +424,7 @@ class AppStore {
     this.changesList = []
     this.conflicts = []
     try {
-      this.changesList = await fetchChanges(org, repo, this.branch || 'main')
+      this.changesList = await fetchChanges(org, repo, this.bookmark || 'main')
     } catch {
       this.changesList = []
     }
@@ -635,14 +661,14 @@ $effect.root(() => {
   $effect(() => {
     const { org, repo } = app.route
     if (!org || !repo) {
-      app.branches = []
+      app.bookmarks = []
       app.tags = []
       app.tree = []
       app.commits = []
       app.graph = []
       return
     }
-    app.branch = ''
+    app.bookmark = ''
     app.selectedPath = null
     app.fileData = null
     app.editing = false

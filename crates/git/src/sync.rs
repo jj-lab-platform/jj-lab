@@ -156,7 +156,7 @@ pub async fn clone_remote(
     org: &str,
     repo: &str,
     url: &str,
-    branch: Option<&str>,
+    bookmark: Option<&str>,
 ) -> Result<String, RepoError> {
     jjlab_core::validate_segment(org, "org").map_err(RepoError::Invalid)?;
     jjlab_core::validate_segment(repo, "repo").map_err(RepoError::Invalid)?;
@@ -178,8 +178,8 @@ pub async fn clone_remote(
     let head = {
         let mut cmd = Command::new("git");
         cmd.arg("clone").arg("--bare");
-        if let Some(branch) = branch {
-            cmd.arg("--branch").arg(branch);
+        if let Some(bookmark) = bookmark {
+            cmd.arg("--branch").arg(bookmark);
         }
         cmd.arg(url).arg(&staging);
         if git_ssl_no_verify() {
@@ -230,11 +230,11 @@ pub async fn clone_remote(
                 .await
                 .map_err(|e| RepoError::Other(format!("import refs: {e}")))?;
 
-            if let Some(branch) = branch {
-                let name: jj_lib::ref_name::RefNameBuf = branch.to_string().into();
+            if let Some(bookmark) = bookmark {
+                let name: jj_lib::ref_name::RefNameBuf = bookmark.to_string().into();
                 if mut_repo.get_local_bookmark(&name).is_absent() {
                     let symbol = jj_lib::ref_name::RemoteRefSymbolBuf {
-                        name: branch.to_string().into(),
+                        name: bookmark.to_string().into(),
                         remote: jj_lib::git::REMOTE_NAME_FOR_LOCAL_GIT_REPO.to_owned(),
                     };
                     let remote_ref = mut_repo.get_remote_bookmark(symbol.as_ref());
@@ -537,7 +537,7 @@ pub async fn import_after_receive(
     crate::project::project_repo(store, db, org, repo).await?;
 
     // Actions/CI: scan workflows at every branch tip and enqueue runs.
-    let tips = crate::read::branch_tips(store, org, repo).await?;
+    let tips = crate::read::bookmark_tips(store, org, repo).await?;
     let logs_root = std::path::PathBuf::from(
         std::env::var("JJLAB_LOGS").unwrap_or_else(|_| "/data/logs".to_string()),
     );

@@ -93,16 +93,16 @@ async fn repo_lifecycle_create_write_branch_tag_delete() {
     assert_ne!(out.change_id, out2.change_id);
 
     // 4. Branch ops: create at main's tip, then delete.
-    let sha = jjlab_git::mutation::set_branch(&store, &db, "o", "r", "feature", "main", "")
+    let sha = jjlab_git::mutation::set_bookmark(&store, &db, "o", "r", "feature", "main", "")
         .await
         .unwrap();
-    let branches = jjlab_git::read::branches(&store, "o", "r").await.unwrap();
-    assert!(branches.iter().any(|b| b.name == "feature" && b.sha == sha));
-    jjlab_git::mutation::delete_branch(&store, &db, "o", "r", "feature")
+    let bookmarks = jjlab_git::read::bookmarks(&store, "o", "r").await.unwrap();
+    assert!(bookmarks.iter().any(|b| b.name == "feature" && b.sha == sha));
+    jjlab_git::mutation::delete_bookmark(&store, &db, "o", "r", "feature")
         .await
         .unwrap();
-    let branches = jjlab_git::read::branches(&store, "o", "r").await.unwrap();
-    assert!(!branches.iter().any(|b| b.name == "feature"));
+    let bookmarks = jjlab_git::read::bookmarks(&store, "o", "r").await.unwrap();
+    assert!(!bookmarks.iter().any(|b| b.name == "feature"));
 
     // 5. Tag ops.
     let tsha = jjlab_git::mutation::set_tag(&store, &db, "o", "r", "v1", "main", "")
@@ -140,7 +140,7 @@ async fn write_file_to_missing_branch_fails() {
     let edits = vec![jjlab_git::mutation::BatchEdit { path: "f.txt".to_string(), content: b"x".to_vec(), base_sha: None }];
     let err = jjlab_git::mutation::commit_edits(&store, &db, "o", "r", "nope", &edits, &[], "m", author(), false)
         .await;
-    assert!(err.is_err(), "writing to a non-existent branch must fail");
+    assert!(err.is_err(), "writing to a non-existent bookmark must fail");
 }
 
 #[tokio::test]
@@ -234,9 +234,9 @@ async fn projection_populates_bookmarks_and_changes() {
         .await
         .unwrap();
     // Clone itself projects; verify DB rows match the jj view.
-    let branches = jjlab_git::read::branches(&store, "o", "r").await.unwrap();
-    assert!(!branches.is_empty(), "clone must import at least one bookmark");
-    for b in &branches {
+    let bookmarks = jjlab_git::read::bookmarks(&store, "o", "r").await.unwrap();
+    assert!(!bookmarks.is_empty(), "clone must import at least one bookmark");
+    for b in &bookmarks {
         let bm = db.get_bookmark("o/r", &b.name).unwrap();
         assert!(bm.is_some(), "bookmark {} should be projected", b.name);
     }
@@ -254,22 +254,22 @@ async fn force_push_reassociates_open_mr_head() {
     let (store, db, url) = seed_remote(tmp.path());
     jjlab_git::sync::clone_remote(&store, &db, "o", "r", &url, None).await.unwrap();
 
-    // Push a feature branch via the mutation path (simulates receive-pack):
-    // write a file on main, then point a branch at a rewritten tip.
-    let branches = jjlab_git::read::branches(&store, "o", "r").await.unwrap();
-    let base_name = branches.first().unwrap().name.clone();
-    let base_sha = branches.first().unwrap().sha.clone();
+    // Push a feature bookmark via the mutation path (simulates receive-pack):
+    // write a file on main, then point a bookmark at a rewritten tip.
+    let bookmarks = jjlab_git::read::bookmarks(&store, "o", "r").await.unwrap();
+    let base_name = bookmarks.first().unwrap().name.clone();
+    let base_sha = bookmarks.first().unwrap().sha.clone();
     let first = jjlab_git::mutation::commit_edits(
         &store, &db, "o", "r", &base_name,
         &vec![jjlab_git::mutation::BatchEdit { path: "f.txt".to_string(), content: b"v1\n".to_vec(), base_sha: None }],
         &[], "one", author(), false,
     ).await.unwrap();
-    assert_ne!(first.sha, base_sha, "write must advance the base branch");
-    jjlab_git::mutation::set_branch(&store, &db, "o", "r", "feature", &first.sha, "")
+    assert_ne!(first.sha, base_sha, "write must advance the base bookmark");
+    jjlab_git::mutation::set_bookmark(&store, &db, "o", "r", "feature", &first.sha, "")
         .await
         .unwrap();
 
-    // Open an MR against the feature branch (branch-name association).
+    // Open an MR against the feature bookmark (bookmark-name association).
     let repo_id = "o/r";
     let _ = db.upsert_org("o", "o");
     let _ = db.upsert_repo(repo_id, "o", "r", "main", None);
@@ -277,7 +277,7 @@ async fn force_push_reassociates_open_mr_head() {
         .create_mr(repo_id, "t", "", "a", &first.change_id, Some(&first.sha), Some("feature"), &base_name)
         .unwrap();
 
-    // Force-push: rewrite the tip (new change-id, same branch name) — the
+    // Force-push: rewrite the tip (new change-id, same bookmark name) — the
     // plain-git case where no change-id header survives.
     let second = jjlab_git::mutation::commit_edits(
         &store, &db, "o", "r", "feature",
@@ -286,7 +286,7 @@ async fn force_push_reassociates_open_mr_head() {
     ).await.unwrap();
     let _ = base_sha;
 
-    // Re-run projection: MR head must follow the branch tip.
+    // Re-run projection: MR head must follow the bookmark tip.
     jjlab_git::project::project_repo(&store, &db, "o", "r")
         .await
         .unwrap();
@@ -294,6 +294,6 @@ async fn force_push_reassociates_open_mr_head() {
     assert_eq!(
         updated.head_sha.as_deref(),
         Some(second.sha.as_str()),
-        "MR head must follow force-pushed branch tip"
+        "MR head must follow force-pushed bookmark tip"
     );
 }

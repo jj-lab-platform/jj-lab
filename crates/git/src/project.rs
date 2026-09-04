@@ -89,7 +89,7 @@ pub async fn project_repo(
                     git_commit_sha: Some(id.hex()),
                 })
                 .map_err(|e| RepoError::Other(e.to_string()))?;
-                db.upsert_bookmark(&repo_id2, name.as_str(), &change_id, false)
+                db.upsert_bookmark(&repo_id2, name.as_str(), false)
                     .map_err(|e| RepoError::Other(e.to_string()))?;
             }
         }
@@ -179,14 +179,14 @@ pub async fn project_repo(
         let open_mrs: Vec<(i64, String, Option<String>)> = db
             .list_open_mrs_for_reassoc()
             .map_err(|e| RepoError::Other(e.to_string()))?;
-        for (mr_id, mr_change_id, mr_branch) in &open_mrs {
-            // Only the MR's own head branch may move its head; a blanket
+        for (mr_id, mr_change_id, mr_bookmark) in &open_mrs {
+            // Only the MR's own head bookmark may move its head; a blanket
             // change-id match across ALL bookmarks would drag the MR back to
             // an unrelated branch that still carries the old change.
-            let Some(branch) = mr_branch else { continue };
+            let Some(bookmark) = mr_bookmark else { continue };
             let target = repo_arc
                 .view()
-                .get_local_bookmark(&jj_lib::ref_name::RefNameBuf::from(branch.clone()));
+                .get_local_bookmark(&jj_lib::ref_name::RefNameBuf::from(bookmark.clone()));
             let Some(id) = target.as_normal() else { continue };
             let Ok(commit) = repo_arc.store().get_commit(id) else { continue };
             let change_id = commit.change_id().reverse_hex();

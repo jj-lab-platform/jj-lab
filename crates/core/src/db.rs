@@ -102,7 +102,7 @@ pub struct MrRow {
     pub state: String,
     pub head_change_id: String,
     pub head_sha: Option<String>,
-    pub head_branch: Option<String>,
+    pub head_bookmark: Option<String>,
     pub base_rev: String,
 }
 
@@ -129,7 +129,6 @@ pub struct MrCommentRow {
 #[derive(Debug, Clone)]
 pub struct BookmarkRow {
     pub name: String,
-    pub change_id: String,
     pub is_remote: bool,
 }
 
@@ -605,28 +604,26 @@ impl Db {
         &self,
         repo_id: &str,
         name: &str,
-        change_id: &str,
         is_remote: bool,
     ) -> Result<()> {
         let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         conn.execute(
-            "INSERT INTO bookmarks (repo_id, name, change_id, is_remote)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (repo_id, name) DO UPDATE SET change_id = excluded.change_id,
-               is_remote = excluded.is_remote",
-            rusqlite::params![repo_id, name, change_id, is_remote],
+            "INSERT INTO bookmarks (repo_id, name, is_remote)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT (repo_id, name) DO UPDATE SET is_remote = excluded.is_remote",
+            rusqlite::params![repo_id, name, is_remote],
         )
         .map_err(|e| Error::Db(format!("upsert bookmark: {e}")))?;
         Ok(())
     }
 
-    pub fn get_bookmark(&self, repo_id: &str, name: &str) -> Result<Option<String>> {
+    pub fn get_bookmark(&self, repo_id: &str, name: &str) -> Result<Option<bool>> {
         let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
-            .prepare("SELECT change_id FROM bookmarks WHERE repo_id = ?1 AND name = ?2")
+            .prepare("SELECT is_remote FROM bookmarks WHERE repo_id = ?1 AND name = ?2")
             .map_err(|e| Error::Db(format!("get bookmark prepare: {e}")))?;
         let mut rows = stmt
-            .query_map(rusqlite::params![repo_id, name], |r| r.get::<_, String>(0))
+            .query_map(rusqlite::params![repo_id, name], |r| r.get::<_, bool>(0))
             .map_err(|e| Error::Db(format!("get bookmark query: {e}")))?;
         match rows.next() {
             Some(Ok(v)) => Ok(Some(v)),
@@ -638,14 +635,13 @@ impl Db {
     pub fn list_bookmarks(&self, repo_id: &str) -> Result<Vec<BookmarkRow>> {
         let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
         let mut stmt = conn
-            .prepare("SELECT name, change_id, is_remote FROM bookmarks WHERE repo_id = ?1")
+            .prepare("SELECT name, is_remote FROM bookmarks WHERE repo_id = ?1")
             .map_err(|e| Error::Db(format!("list bookmarks prepare: {e}")))?;
         let rows = stmt
             .query_map([repo_id], |r| {
                 Ok(BookmarkRow {
                     name: r.get(0)?,
-                    change_id: r.get(1)?,
-                    is_remote: r.get::<_, bool>(2)?,
+                    is_remote: r.get::<_, bool>(1)?,
                 })
             })
             .map_err(|e| Error::Db(format!("list bookmarks query: {e}")))?;
@@ -760,7 +756,7 @@ pub fn create_mr(
     author: &str,
     head_change_id: &str,
     head_sha: Option<&str>,
-    head_branch: Option<&str>,
+    head_bookmark: Option<&str>,
     base_rev: &str,
 ) -> Result<MrRow> {
     let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
@@ -773,7 +769,7 @@ pub fn create_mr(
         .map_err(|e| Error::Db(format!("create mr: {e}")))?;
     conn.execute(
         "INSERT INTO merge_requests
-           (repo_id, number, title, description, author, head_change_id, head_sha, head_branch, base_rev)
+           (repo_id, number, title, description, author, head_change_id, head_sha, head_bookmark, base_rev)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
             repo_id,
@@ -783,7 +779,7 @@ pub fn create_mr(
             author,
             head_change_id,
             head_sha,
-            head_branch,
+            head_bookmark,
             base_rev
         ],
     )
@@ -795,7 +791,7 @@ pub fn create_mr(
 fn get_mr_from(conn: &Connection, id: i64) -> Result<MrRow> {
     conn.query_row(
         "SELECT id, repo_id, number, title, description, author, state,
-                head_change_id, head_sha, head_branch, base_rev
+                head_change_id, head_sha, head_bookmark, base_rev
          FROM merge_requests WHERE id = ?1",
         [id],
         |r| {
@@ -809,7 +805,7 @@ fn get_mr_from(conn: &Connection, id: i64) -> Result<MrRow> {
                 state: r.get(6)?,
                 head_change_id: r.get(7)?,
                 head_sha: r.get(8)?,
-                head_branch: r.get(9)?,
+                head_bookmark: r.get(9)?,
                 base_rev: r.get(10)?,
             })
         },
@@ -1007,11 +1003,11 @@ pub fn list_mr_comments(&self, mr_id: i64) -> Result<Vec<MrCommentRow>> {
     Ok(out)
 }
 
-/// Open MRs as (id, head_change_id, head_branch) for force-push re-association.
+/// Open MRs as (id, head_change_id, head_bookmark) for force-push re-association.
 pub fn list_open_mrs_for_reassoc(&self) -> Result<Vec<(i64, String, Option<String>)>> {
     let conn = self.pool.get().map_err(|e| Error::Db(format!("db get: {e}")))?;
     let mut stmt = conn
-        .prepare("SELECT id, head_change_id, head_branch FROM merge_requests WHERE state = 'open'")
+        .prepare("SELECT id, head_change_id, head_bookmark FROM merge_requests WHERE state = 'open'")
         .map_err(|e| Error::Db(format!("list open mrs: {e}")))?;
     let rows = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -1390,7 +1386,6 @@ CREATE TABLE IF NOT EXISTS change_parents (
 CREATE TABLE IF NOT EXISTS bookmarks (
     repo_id TEXT NOT NULL REFERENCES repos(id) ON UPDATE CASCADE,
     name TEXT NOT NULL,
-    change_id TEXT NOT NULL REFERENCES changes(change_id),
     is_remote INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (repo_id, name)
 );
@@ -1419,7 +1414,7 @@ CREATE TABLE IF NOT EXISTS merge_requests (
     state TEXT NOT NULL DEFAULT 'open',
     head_change_id TEXT NOT NULL,
     head_sha TEXT,
-    head_branch TEXT,
+    head_bookmark TEXT,
     base_rev TEXT NOT NULL DEFAULT 'main',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),

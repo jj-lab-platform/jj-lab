@@ -66,21 +66,6 @@ pub async fn annotate_file(
     Json(json!({ "annotations": lines })).into_response()
 }
 
-pub async fn list_branches(
-    State(state): State<AppState>,
-    Path((org, repo)): Path<(String, String)>,
-) -> Response {
-    let store = state.store.clone();
-    let branches = match run_jj(move || {
-        pollster::block_on(jjlab_git::read::branches(&store, &org, &repo))
-    })
-    .await
-    {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    Json(json!({ "branches": branches })).into_response()
-}
 
 pub async fn raw_file(
     State(state): State<AppState>,
@@ -100,22 +85,6 @@ pub async fn raw_file(
         Ok(bytes) => bytes.into_response(),
         Err(resp) => resp,
     }
-}
-
-pub async fn tree_at_sha(
-    State(state): State<AppState>,
-    Path((org, repo, sha)): Path<(String, String, String)>,
-) -> Response {
-    let store = state.store.clone();
-    let entries = match run_jj(move || {
-        pollster::block_on(jjlab_git::read::tree_at_sha(&store, &org, &repo, &sha))
-    })
-    .await
-    {
-        Ok(e) => e,
-        Err(resp) => return resp,
-    };
-    Json(json!({ "tree": entries })).into_response()
 }
 
 // ── change list (rev-anchored, like commits/files) ──

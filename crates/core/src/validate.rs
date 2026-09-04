@@ -143,25 +143,25 @@ mod tests {
 
     #[test]
     fn refs_allow_slash_but_reject_backslash() {
-        assert!(validate_ref_name("feat/log-optimization", "branch").is_ok());
-        assert!(validate_ref_name("main", "branch").is_ok());
+        assert!(validate_ref_name("feat/log-optimization", "bookmark").is_ok());
+        assert!(validate_ref_name("main", "bookmark").is_ok());
         assert!(validate_ref_name("v1.0.0", "tag").is_ok());
-        assert!(validate_ref_name("a\\b", "branch").is_err());
-        assert!(validate_ref_name("a b", "branch").is_err());
-        assert!(validate_ref_name("a..b", "branch").is_err());
-        assert!(validate_ref_name("@{", "branch").is_err());
+        assert!(validate_ref_name("a\\b", "bookmark").is_err());
+        assert!(validate_ref_name("a b", "bookmark").is_err());
+        assert!(validate_ref_name("a..b", "bookmark").is_err());
+        assert!(validate_ref_name("@{", "bookmark").is_err());
     }
 
     #[test]
     fn refs_reject_edge_forms() {
-        assert!(validate_ref_name("", "branch").is_err());
-        assert!(validate_ref_name("/lead", "branch").is_err());
-        assert!(validate_ref_name("trail/", "branch").is_err());
+        assert!(validate_ref_name("", "bookmark").is_err());
+        assert!(validate_ref_name("/lead", "bookmark").is_err());
+        assert!(validate_ref_name("trail/", "bookmark").is_err());
         assert!(validate_ref_name("a//b", "branch").is_err());
-        assert!(validate_ref_name("a.lock", "branch").is_err());
-        assert!(validate_ref_name(".dot", "branch").is_err());
-        assert!(validate_ref_name("a.", "branch").is_err());
-        assert!(validate_ref_name("-a", "branch").is_err());
-        assert!(validate_ref_name("a:colon", "branch").is_err());
+        assert!(validate_ref_name("a.lock", "bookmark").is_err());
+        assert!(validate_ref_name(".dot", "bookmark").is_err());
+        assert!(validate_ref_name("a.", "bookmark").is_err());
+        assert!(validate_ref_name("-a", "bookmark").is_err());
+        assert!(validate_ref_name("a:colon", "bookmark").is_err());
     }
 }

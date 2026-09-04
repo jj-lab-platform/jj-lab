@@ -165,7 +165,7 @@ pub async fn ingest_bare_repo(
             .lookup_anchor(&repo_id, &head_sha)
             .map_err(|e| RepoError::Other(e.to_string()))?
         {
-            db.upsert_bookmark(&repo_id, &branch_name, &anchor.change_id, false)
+            db.upsert_bookmark(&repo_id, &branch_name, false)
                 .map_err(|e| RepoError::Other(e.to_string()))?;
         }
     }

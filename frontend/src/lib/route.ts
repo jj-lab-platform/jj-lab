@@ -3,7 +3,7 @@
 export type Tab =
   | 'files'
   | 'commits'
-  | 'branches'
+  | 'bookmarks'
   | 'graph'
   | 'changes'
   | 'pulls'
@@ -22,7 +22,7 @@ export interface Route {
 export const TABS: { id: Tab; label: string }[] = [
   { id: 'files', label: 'Code' },
   { id: 'commits', label: 'Commits' },
-  { id: 'branches', label: 'Branches' },
+  { id: 'bookmarks', label: 'Bookmarks' },
   { id: 'graph', label: 'Graph' },
   { id: 'changes', label: 'Changes' },
   { id: 'pulls', label: 'Pulls' },

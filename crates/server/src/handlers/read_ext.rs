@@ -11,8 +11,15 @@ pub async fn commit_log_handler(
     Path((org, repo)): Path<(String, String)>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let page: usize = q.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
+    // Pagination uses offset+limit (skip) rather than page, so callers can
+    // page deterministically; `page` is still accepted for backward compat.
     let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(20);
+    let offset: usize = q.get("offset").and_then(|v| v.parse().ok()).unwrap_or_else(|| {
+        q.get("page")
+            .and_then(|v| v.parse::<usize>().ok())
+            .map(|p| p.saturating_sub(1).saturating_mul(limit))
+            .unwrap_or(0)
+    });
     let rev = q.get("sha").cloned().or_else(|| q.get("rev").cloned());
     let since = match q.get("since") {
         Some(s) => match jjlab_git::read::parse_time_bound(s) {
@@ -37,7 +44,7 @@ pub async fn commit_log_handler(
             rev.as_deref(),
             since,
             until,
-            page.saturating_sub(1),
+            offset,
             limit,
         ))
     })

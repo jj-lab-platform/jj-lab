@@ -15,7 +15,7 @@ fn mr_json(mr: &jjlab_core::db::MrRow, review_state: String) -> Value {
         "state": mr.state,
         "head_change_id": mr.head_change_id,
         "head_sha": mr.head_sha,
-        "head_branch": mr.head_branch,
+        "head_bookmark": mr.head_bookmark,
         "base": mr.base_rev,
         "review_state": review_state,
     })

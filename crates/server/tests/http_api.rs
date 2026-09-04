@@ -32,7 +32,16 @@ impl TestApp {
         // Point the actions log root at the tempdir (process-global env; the
         // test harness runs each test in its own process by default).
         std::env::set_var("JJLAB_LOGS", dir.path().join("logs"));
-        let state = AppState::new(db, store, parse_tokens("wtoken=write,rtoken=read"), assets);
+        let mut state = AppState::new(db, store, parse_tokens("wtoken=write,rtoken=read"), assets);
+        // Enable the in-process pkglab registry so /releases (which stores a
+        // release as an artifact) does not 503 "package registry not enabled".
+        if let Ok(reg) = pkglab_core::Registry::open(&dir.path().join("pkglab")) {
+            state = state.with_registry(Arc::new(pkglab_common::Registry::new(
+                reg.blobs.clone(),
+                reg.meta.clone(),
+                reg.upstreams.clone(),
+            )));
+        }
         let router = build_router(state);
         Self { router, _dir: dir, _guard: guard }
     }
@@ -152,12 +161,12 @@ async fn repo_create_duplicate_conflict_then_write_read_delete_file() {
     let app = TestApp::new();
     // Create repo.
     let mut resp = app
-        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
     assert_eq!(TestApp::status(&mut resp).await, 201, "create repo");
     // Duplicate → 409-ish (we use 409 via CONFLICT path? server returns 409/500 map) — accept 4xx.
     let mut resp = app
-        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
     let dup = TestApp::status(&mut resp).await;
     assert!((400..500).contains(&dup), "duplicate create must be 4xx, got {dup}");
@@ -168,7 +177,7 @@ async fn repo_create_duplicate_conflict_then_write_read_delete_file() {
             "POST",
             "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("branch", "main".into()), ("message", "add".into()),
+            obj(&[("bookmark", "main".into()), ("message", "add".into()),
                 ("actions", array(&[obj(&[("action", "update".into()), ("path", "hello.txt".into()), ("content", "hi\n".into())])]))]),
         )
         .await;
@@ -190,7 +199,7 @@ async fn repo_create_duplicate_conflict_then_write_read_delete_file() {
             "POST",
             "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("branch", "main".into()), ("message", "add".into()),
+            obj(&[("bookmark", "main".into()), ("message", "add".into()),
                 ("actions", array(&[obj(&[("action", "update".into()), ("path", "hello.txt".into()), ("content", "hi v2\n".into())])]))]),
         )
         .await;
@@ -213,7 +222,7 @@ async fn repo_create_duplicate_conflict_then_write_read_delete_file() {
             "POST",
             "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("branch", "main".into()), ("message", "rm".into()),
+            obj(&[("bookmark", "main".into()), ("message", "rm".into()),
                 ("actions", array(&[obj(&[("action", "delete".into()), ("path", "hello.txt".into())])]))]),
         )
         .await;
@@ -226,7 +235,7 @@ async fn repo_create_duplicate_conflict_then_write_read_delete_file() {
 async fn contents_write_requires_body() {
     let app = TestApp::new();
     let mut resp = app
-        .json("POST", "/api/v1/repos/o/r/contents/f.txt", Some("wtoken"), obj(&[("branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/r/contents/f.txt", Some("wtoken"), obj(&[("bookmark", "main".into())]))
         .await;
     // Repo missing → 404 either way; just ensure not 500-crash.
     let s = TestApp::status(&mut resp).await;
@@ -240,14 +249,14 @@ async fn release_lifecycle_with_assets() {
     let app = TestApp::new();
     // Create repo + file so the tag has content.
     let _ = app
-        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
     let _ = app
         .json(
             "POST",
             "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("branch", "main".into()), ("message", "add".into()),
+            obj(&[("bookmark", "main".into()), ("message", "add".into()),
                 ("actions", array(&[obj(&[("action", "update".into()), ("path", "bin.txt".into()), ("content", "payload\n".into())])]))]),
         )
         .await;
@@ -315,14 +324,14 @@ async fn release_lifecycle_with_assets() {
 async fn mr_lifecycle_review_aggregation_and_head_reassociation() {
     let app = TestApp::new();
     let _ = app
-        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
     let mut resp = app
         .json(
             "POST",
             "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("branch", "main".into()), ("message", "add".into()), ("amend", false.into()),
+            obj(&[("bookmark", "main".into()), ("message", "add".into()), ("amend", false.into()),
                 ("actions", array(&[obj(&[("action", "update".into()), ("path", "f.txt".into()), ("content", "v1\n".into())])]))]),
         )
         .await;
@@ -333,7 +342,7 @@ async fn mr_lifecycle_review_aggregation_and_head_reassociation() {
     let _ = app
         .json(
             "POST",
-            "/api/v1/repos/o/r/branches/feature",
+            "/api/v1/repos/o/r/bookmarks/feature",
             Some("wtoken"),
             obj(&[("target", base_sha.clone().into())]),
         )
@@ -343,7 +352,7 @@ async fn mr_lifecycle_review_aggregation_and_head_reassociation() {
             "POST",
             "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("branch", "feature".into()), ("message", "add".into()), ("amend", false.into()),
+            obj(&[("bookmark", "feature".into()), ("message", "add".into()), ("amend", false.into()),
                 ("actions", array(&[obj(&[("action", "update".into()), ("path", "f.txt".into()), ("content", "v2\n".into())])]))]),
         )
         .await;
@@ -405,7 +414,7 @@ async fn mr_lifecycle_review_aggregation_and_head_reassociation() {
             "POST",
             "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("branch", "feature".into()), ("message", "v3".into()), ("amend", false.into()),
+            obj(&[("bookmark", "feature".into()), ("message", "v3".into()), ("amend", false.into()),
                 ("actions", array(&[obj(&[("action", "update".into()), ("path", "f.txt".into()), ("content", "v3\n".into())])]))]),
         )
         .await;
@@ -433,14 +442,14 @@ async fn mr_lifecycle_review_aggregation_and_head_reassociation() {
 async fn actions_workflow_dispatch_runs_and_logs() {
     let app = TestApp::new();
     let _ = app
-        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
     let _ = app
         .json(
             "POST",
             "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("branch", "main".into()), ("message", "add".into()),
+            obj(&[("bookmark", "main".into()), ("message", "add".into()),
                 ("actions", array(&[obj(&[("action", "update".into()), ("path", ".github/workflows/ci.yml".into()), ("content", "name: CI\non: push\njobs:\n  build:\n    steps:\n      - run: echo from-actions\n".into())])]))]),
         )
         .await;
@@ -479,14 +488,14 @@ async fn actions_workflow_dispatch_runs_and_logs() {
 async fn annotate_reports_origin_change_and_rebase_advances_dest() {
     let app = TestApp::new();
     let _ = app
-        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
     let _ = app
         .json(
             "POST",
             "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("branch", "main".into()), ("message", "add".into()),
+            obj(&[("bookmark", "main".into()), ("message", "add".into()),
                 ("actions", array(&[obj(&[("action", "update".into()), ("path", "u.txt".into()), ("content", "x\n".into())])]))]),
         )
         .await;
@@ -518,14 +527,14 @@ async fn annotate_reports_origin_change_and_rebase_advances_dest() {
 async fn seeded_app() -> TestApp {
     let app = TestApp::new();
     let _ = app
-        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
     let _ = app
         .json(
             "POST",
             "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("branch", "main".into()), ("message", "add".into()), ("amend", false.into()),
+            obj(&[("bookmark", "main".into()), ("message", "add".into()), ("amend", false.into()),
                 ("actions", array(&[obj(&[("action", "update".into()), ("path", "a.txt".into()), ("content", "line1\n".into())])]))]),
         )
         .await;
@@ -534,7 +543,7 @@ async fn seeded_app() -> TestApp {
             "POST",
             "/api/v1/repos/o/r/commits",
             Some("wtoken"),
-            obj(&[("branch", "main".into()), ("message", "add".into()), ("amend", false.into()),
+            obj(&[("bookmark", "main".into()), ("message", "add".into()), ("amend", false.into()),
                 ("actions", array(&[obj(&[("action", "update".into()), ("path", "a.txt".into()), ("content", "line1\nline2\n".into())])]))]),
         )
         .await;
@@ -552,16 +561,17 @@ async fn commit_log_endpoint_paginates() {
 }
 
 #[tokio::test]
-async fn tree_and_branches_and_tags_endpoints() {
+async fn bookmarks_and_tags_endpoints() {
     let app = seeded_app().await;
-    let mut resp = app.send("GET", "/api/v1/repos/o/r/branches", None, None).await;
+    let mut resp = app.send("GET", "/api/v1/repos/o/r/bookmarks", None, None).await;
     let body = TestApp::body_json(&mut resp).await;
-    let sha = body["branches"][0]["sha"].as_str().unwrap().to_string();
+    assert!(body["bookmarks"].as_array().unwrap().iter().any(|b| b["name"] == "main"));
+    let sha = body["bookmarks"][0]["sha"].as_str().unwrap().to_string();
 
-    let mut resp = app.send("GET", &format!("/api/v1/repos/o/r/tree/{sha}"), None, None).await;
+    let mut resp = app.send("GET", &format!("/api/v1/repos/o/r/contents?ref={sha}"), None, None).await;
     assert_eq!(TestApp::status(&mut resp).await, 200);
     let body = TestApp::body_json(&mut resp).await;
-    assert!(body["tree"].as_array().unwrap().iter().any(|e| e["path"] == "a.txt"));
+    assert!(body["entries"].as_array().unwrap().iter().any(|e| e["path"] == "a.txt"));
 
     let mut resp = app.send("GET", "/api/v1/repos/o/r/tags", None, None).await;
     assert_eq!(TestApp::status(&mut resp).await, 200);
@@ -637,17 +647,17 @@ async fn archive_tarball_endpoint_downloads() {
 }
 
 #[tokio::test]
-async fn branch_crud_endpoints() {
+async fn bookmark_crud_endpoints() {
     let app = seeded_app().await;
-    let mut resp = app.send("GET", "/api/v1/repos/o/r/branches", None, None).await;
+    let mut resp = app.send("GET", "/api/v1/repos/o/r/bookmarks", None, None).await;
     let body = TestApp::body_json(&mut resp).await;
-    let main_sha = body["branches"][0]["sha"].as_str().unwrap().to_string();
+    let main_sha = body["bookmarks"][0]["sha"].as_str().unwrap().to_string();
 
-    // Create branch pointing at main.
+    // Create bookmark pointing at main.
     let mut resp = app
         .json(
             "POST",
-            "/api/v1/repos/o/r/branches/feature",
+            "/api/v1/repos/o/r/bookmarks/feature",
             Some("wtoken"),
             obj(&[("target", main_sha.clone().into())]),
         )
@@ -655,19 +665,19 @@ async fn branch_crud_endpoints() {
     assert_eq!(TestApp::status(&mut resp).await, 200);
     // Delete it.
     let mut resp = app
-        .send("DELETE", "/api/v1/repos/o/r/branches/feature", Some("wtoken"), None)
+        .send("DELETE", "/api/v1/repos/o/r/bookmarks/feature", Some("wtoken"), None)
         .await;
     assert_eq!(TestApp::status(&mut resp).await, 204);
-    let mut resp = app.send("GET", "/api/v1/repos/o/r/branches", None, None).await;
+    let mut resp = app.send("GET", "/api/v1/repos/o/r/bookmarks", None, None).await;
     let body = TestApp::body_json(&mut resp).await;
-    assert!(!body["branches"].as_array().unwrap().iter().any(|b| b["name"] == "feature"));
+    assert!(!body["bookmarks"].as_array().unwrap().iter().any(|b| b["name"] == "feature"));
 }
 
 #[tokio::test]
 async fn mr_diff_endpoint_404_for_missing() {
     let app = TestApp::new();
     let _ = app
-        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
     let mut resp = app.send("GET", "/api/v1/repos/o/r/pulls/99/diff", None, None).await;
     assert_eq!(TestApp::status(&mut resp).await, 404);
@@ -705,14 +715,14 @@ async fn commit_info_endpoint_by_sha_and_prefix() {
 async fn repo_delete_endpoint_removes_repo() {
     let app = TestApp::new();
     let _ = app
-        .json("POST", "/api/v1/repos/o/doomed", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/doomed", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
     let mut resp = app
         .send("DELETE", "/api/v1/repos/o/doomed", Some("wtoken"), None)
         .await;
     assert_eq!(TestApp::status(&mut resp).await, 204);
     // Content is gone.
-    let mut resp = app.send("GET", "/api/v1/repos/o/doomed/branches", None, None).await;
+    let mut resp = app.send("GET", "/api/v1/repos/o/doomed/bookmarks", None, None).await;
     assert_eq!(TestApp::status(&mut resp).await, 404);
 }
 
@@ -723,17 +733,17 @@ async fn mutating_rest_requires_write_token() {
     let app = TestApp::new();
     // Anonymous create repo → 401.
     let mut resp = app
-        .json("POST", "/api/v1/repos/o/anon", None, obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/anon", None, obj(&[("default_bookmark", "main".into())]))
         .await;
     assert_eq!(TestApp::status(&mut resp).await, 401, "anonymous create blocked");
     // Read token create repo → 403.
     let mut resp = app
-        .json("POST", "/api/v1/repos/o/anon", Some("rtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/anon", Some("rtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
     assert_eq!(TestApp::status(&mut resp).await, 403, "read token blocked");
     // Write token create repo → 201, and delete works.
     let mut resp = app
-        .json("POST", "/api/v1/repos/o/anon", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/anon", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
     assert_eq!(TestApp::status(&mut resp).await, 201, "write token allowed");
     // Anonymous delete → 401 (not silently allowed).
@@ -748,9 +758,9 @@ async fn mutating_rest_requires_write_token() {
 async fn read_routes_stay_anonymous() {
     let app = TestApp::new();
     let _ = app
-        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
-    let mut resp = app.send("GET", "/api/v1/repos/o/r/branches", None, None).await;
+    let mut resp = app.send("GET", "/api/v1/repos/o/r/bookmarks", None, None).await;
     assert_eq!(TestApp::status(&mut resp).await, 200, "reads stay anonymous");
 }
 
@@ -758,7 +768,7 @@ async fn read_routes_stay_anonymous() {
 async fn delete_repo_cleans_db_listing() {
     let app = TestApp::new();
     let _ = app
-        .json("POST", "/api/v1/repos/o/cleanup", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/cleanup", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
     // Repo appears in the Explore list.
     let mut resp = app.send("GET", "/api/v1/repos", None, None).await;
@@ -858,42 +868,42 @@ async fn traversal_org_repo_names_are_rejected() {
     let app = TestApp::new();
     // Path traversal via percent-encoded ".." must not create a repo.
     let mut resp = app
-        .json("POST", "/api/v1/repos/%2e%2e/evil", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/%2e%2e/evil", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
     let status = TestApp::status(&mut resp).await;
     assert!((400..500).contains(&status), "traversal must be rejected, got {status}", );
 
     // Slash inside a segment (not a separator) is invalid.
     let mut resp = app
-        .json("POST", "/api/v1/repos/a%2Fb/c", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/a%2Fb/c", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
     assert!((400..500).contains(&TestApp::status(&mut resp).await), "encoded slash rejected");
 }
 
 #[tokio::test]
-async fn invalid_branch_name_rejected_but_slash_allowed() {
+async fn invalid_bookmark_name_rejected_but_slash_allowed() {
     let app = TestApp::new();
     let _ = app
-        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/r", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
-    // Backslash in a branch name is invalid (git forbids it).
+    // Backslash in a bookmark name is invalid (git forbids it).
     let mut resp = app
-        .json("POST", "/api/v1/repos/o/r/branches/feat%5Cbad", Some("wtoken"), obj(&[("target", "main".into())]))
+        .json("POST", "/api/v1/repos/o/r/bookmarks/feat%5Cbad", Some("wtoken"), obj(&[("target", "main".into())]))
         .await;
-    assert!((400..500).contains(&TestApp::status(&mut resp).await), "backslash branch rejected");
+    assert!((400..500).contains(&TestApp::status(&mut resp).await), "backslash bookmark rejected");
 
-    // A slash-separated branch name is allowed (creates feat/log).
+    // A slash-separated bookmark name is allowed (creates feat/log).
     let mut resp = app
-        .json("POST", "/api/v1/repos/o/r/branches/feat%2Flog", Some("wtoken"), obj(&[("target", "main".into())]))
+        .json("POST", "/api/v1/repos/o/r/bookmarks/feat%2Flog", Some("wtoken"), obj(&[("target", "main".into())]))
         .await;
-    assert_eq!(TestApp::status(&mut resp).await, 200, "slash branch allowed");
+    assert_eq!(TestApp::status(&mut resp).await, 200, "slash bookmark allowed");
 }
 
 #[tokio::test]
 async fn rename_repo_updates_listing_and_cascades() {
     let app = TestApp::new();
     let _ = app
-        .json("POST", "/api/v1/repos/o/old", Some("wtoken"), obj(&[("default_branch", "main".into())]))
+        .json("POST", "/api/v1/repos/o/old", Some("wtoken"), obj(&[("default_bookmark", "main".into())]))
         .await;
     let _ = app
         .json("PATCH", "/api/v1/repos/o/old", Some("wtoken"), obj(&[("new_name", "new".into())]))
@@ -908,9 +918,9 @@ async fn rename_repo_updates_listing_and_cascades() {
     assert!(has_new, "renamed repo appears under new name");
     assert!(!has_old, "old name must be gone");
     // New name resolves, old name 404s.
-    let mut resp = app.send("GET", "/api/v1/repos/o/new/branches", None, None).await;
+    let mut resp = app.send("GET", "/api/v1/repos/o/new/bookmarks", None, None).await;
     assert_eq!(TestApp::status(&mut resp).await, 200);
-    let mut resp = app.send("GET", "/api/v1/repos/o/old/branches", None, None).await;
+    let mut resp = app.send("GET", "/api/v1/repos/o/old/bookmarks", None, None).await;
     assert_eq!(TestApp::status(&mut resp).await, 404);
 }
 

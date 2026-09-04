@@ -11,14 +11,14 @@
 </script>
 
 <div class="mb-3 flex items-center gap-2">
-  <NativeSelect.Root value={app.branch} onchange={(e) => { app.branch = (e.target as HTMLSelectElement).value; app.selectedPath = null; app.fileData = null; void app.loadTree(); void app.loadReadme() }}
+  <NativeSelect.Root value={app.bookmark} onchange={(e) => { app.bookmark = (e.target as HTMLSelectElement).value; app.selectedPath = null; app.fileData = null; void app.loadTree(); void app.loadReadme() }}
     class="flex h-8 w-52 items-center rounded border border-[var(--gitea-input-border)] bg-[var(--gitea-input-bg)] px-2 text-xs font-mono text-[var(--gitea-text)]">
-    <NativeSelect.Option disabled>branch</NativeSelect.Option>
-    {#each app.branches as b (b.name)}
+    <NativeSelect.Option disabled>bookmark</NativeSelect.Option>
+    {#each app.bookmarks as b (b.name)}
       <NativeSelect.Option value={b.name}> <GitBranch class="size-3 inline" /> {b.name}</NativeSelect.Option>
     {/each}
   </NativeSelect.Root>
-  <span class="g-subtle">{app.branches.length} branche{app.branches.length === 1 ? '' : 's'} · {app.tags.length} tags</span>
+  <span class="g-subtle">{app.bookmarks.length} bookmark{app.bookmarks.length === 1 ? '' : 's'} · {app.tags.length} tags</span>
 </div>
 
 {#if app.route.sub === 'blob' && app.selectedPath}
@@ -79,7 +79,7 @@
           <div class="g-files-row">
             <div class="g-files-cell g-files-head">
               <GitBranch class="size-3.5 g-muted" />
-              <span class="g-muted text-xs">{app.branch || 'main'}</span>
+              <span class="g-muted text-xs">{app.bookmark || 'main'}</span>
             </div>
           </div>
           {#each app.tree as entry (entry.path)}

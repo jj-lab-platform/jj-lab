@@ -430,7 +430,7 @@ pub async fn dispatch(
 
     // Find the workflow file on some branch tip.
     let mut found = None;
-    for (_name, sha) in read::branch_tips(store, org, repo).await? {
+    for (_name, sha) in read::bookmark_tips(store, org, repo).await? {
         if let Ok(raw) = read::read_file_at(store, org, repo, &sha, &wf_row.path).await {
             found = Some((sha, raw));
             break;
@@ -438,7 +438,7 @@ pub async fn dispatch(
     }
     let Some((head, raw)) = found else {
         return Err(RepoError::Other(format!(
-            "workflow file {} not found on any branch",
+            "workflow file {} not found on any bookmark",
             wf_row.path
         )));
     };
@@ -489,7 +489,7 @@ mod tests {
     fn parses_on_sequence_and_mapping_forms() {
         let a = wf("on: [push, workflow_dispatch]\njobs: {}\n");
         assert!(triggers_of(&a).contains(&"workflow_dispatch".to_string()));
-        let b = wf("on:\n  push:\n    branches: [main]\njobs: {}\n");
+        let b = wf("on:\n  push:\n    bookmarks: [main]\njobs: {}\n");
         assert!(triggers_of(&b).contains(&"push".to_string()));
     }
 

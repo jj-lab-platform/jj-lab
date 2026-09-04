@@ -53,7 +53,7 @@
         <button class="g-btn small" onclick={() => app.copyClone(cloneUrls(app.route.org!, app.route.repo!).http)}>
           {#if app.cloneCopied}<Check class="size-3.5" /> Copied{:else}<Copy class="size-3.5" /> Clone{/if}
         </button>
-        <a class="g-btn small" href={archiveUrl(app.route.org!, app.route.repo!, app.branch || 'main')} title="Download .tar.gz">
+        <a class="g-btn small" href={archiveUrl(app.route.org!, app.route.repo!, app.bookmark || 'main')} title="Download .tar.gz">
           <Download class="size-3.5" />
         </a>
       {/if}
@@ -82,7 +82,7 @@
           <button class="g-btn small" onclick={() => app.copyClone(cloneUrls(app.route.org!, app.route.repo!).http)}>
             {#if app.cloneCopied}<Check class="size-3.5" /> Copied{:else}<Copy class="size-3.5" /> Clone{/if}
           </button>
-          <a class="g-btn small" href={archiveUrl(app.route.org!, app.route.repo!, app.branch || 'main')} title="Download source (.tar.gz)">
+          <a class="g-btn small" href={archiveUrl(app.route.org!, app.route.repo!, app.bookmark || 'main')} title="Download source (.tar.gz)">
             <Download class="size-3.5" />
           </a>
         </div>
@@ -103,7 +103,7 @@
           <FilesTab />
         {:else if app.route.tab === 'commits'}
           <CommitsTab />
-        {:else if app.route.tab === 'branches'}
+        {:else if app.route.tab === 'bookmarks'}
           <BranchesTab />
         {:else if app.route.tab === 'graph'}
           <GraphTab />
@@ -169,7 +169,7 @@
         <Input.Root placeholder="org" bind:value={app.importOrg} />
         <Input.Root placeholder="repo name" bind:value={app.importRepoName} />
         <Input.Root placeholder="git url" bind:value={app.importUrl} oninput={(e) => { const v = (e.target as HTMLInputElement).value; if (!app.importRepoName) app.importRepoName = app.deriveName(v) }} />
-        <Input.Root placeholder="branch (optional)" bind:value={app.importBranch} />
+        <Input.Root placeholder="bookmark (optional)" bind:value={app.importBookmark} />
       </div>
       <Dialog.Footer>
         <button class="g-btn tiny" onclick={() => (app.importOpen = false)}>Cancel</button>

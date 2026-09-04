@@ -15,7 +15,7 @@
   </div>
   <div>
     <div class="mb-1 text-xs font-semibold g-muted">Download</div>
-    <a href={archiveUrl(app.route.org!, app.route.repo!, app.branch || 'main')} class="text-xs hover:underline" style="color:var(--primary)">source (tar.gz)</a>
+    <a href={archiveUrl(app.route.org!, app.route.repo!, app.bookmark || 'main')} class="text-xs hover:underline" style="color:var(--primary)">source (tar.gz)</a>
   </div>
   <div class="border-t border-[var(--gitea-secondary)] pt-4">
     <div class="mb-1 text-xs font-semibold" style="color:var(--destructive)">Danger zone</div>

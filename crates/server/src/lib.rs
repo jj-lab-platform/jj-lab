@@ -72,19 +72,19 @@ pub struct SyncBody {
     #[serde(default)]
     remote: Option<String>,
     #[serde(default)]
-    branch: Option<String>,
+    bookmark: Option<String>,
     #[serde(default)]
     secret: String,
 }
 
 #[derive(Deserialize)]
 pub struct CreateRepoBody {
-    #[serde(default = "default_branch")]
-    default_branch: String,
+    #[serde(default = "default_bookmark")]
+    default_bookmark: String,
 }
 
 pub 
-fn default_branch() -> String {
+fn default_bookmark() -> String {
     "main".to_string()
 }
 
@@ -95,8 +95,8 @@ pub struct RenameRepoBody {
 }
 
 #[derive(Deserialize)]
-pub struct BranchBody {
-    /// Snapshot to point the branch at: commit-sha / bookmark / tag.
+pub struct BookmarkBody {
+    /// Snapshot to point the bookmark at: commit-sha / bookmark / tag.
     #[serde(default)]
     target: String,
     /// Alternative: a change-id (resolved to its current commit).
@@ -125,7 +125,7 @@ pub struct CreateMrBody {
     #[serde(default)]
     body: String,
     head: String,
-    #[serde(default = "default_branch")]
+    #[serde(default = "default_bookmark")]
     base: String,
 }
 
@@ -482,10 +482,8 @@ use axum::routing::put as put_route;
             // Git-aligned read surface (commit-addressed).
             .route("/api/v1/repos/{org}/{repo}/commits/{sha}", get(commit_info))
             .route("/api/v1/repos/{org}/{repo}/commits/{sha}/diff", get(commit_diff))
-            .route("/api/v1/repos/{org}/{repo}/branches", get(list_branches))
             .route("/api/v1/repos/{org}/{repo}/blob", get(raw_file))
             .route("/api/v1/repos/{org}/{repo}/annotate/{*path}", get(annotate_file))
-            .route("/api/v1/repos/{org}/{repo}/tree/{sha}", get(tree_at_sha))
             // jj-native: change list anchored to a snapshot rev (like commits/files).
             .route("/api/v1/repos/{org}/{repo}/changes", get(list_changes))
             // Metadata (jj-native) — conflicts + bookmarks.
@@ -499,8 +497,8 @@ use axum::routing::put as put_route;
             // Write surface (D).
             .route("/api/v1/repos/{org}/{repo}", post(create_repo).delete(delete_repo).patch(rename_repo))
             .route(
-                "/api/v1/repos/{org}/{repo}/branches/{name}",
-                post(set_branch_handler).delete(delete_branch_handler),
+                "/api/v1/repos/{org}/{repo}/bookmarks/{name}",
+                post(set_bookmark_handler).delete(delete_bookmark_handler),
             )
             .route(
                 "/api/v1/repos/{org}/{repo}/tags/{name}",

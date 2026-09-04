@@ -1,7 +1,7 @@
 // ── transport ──
 
 import type {
-  BranchInfo,
+  BookmarkInfo,
   ChangeSummary,
   CommitInfo,
   Conflict,
@@ -78,15 +78,15 @@ export async function fetchOrgs(): Promise<Org[]> {
 
 // ── repo reads ──
 
-export async function fetchBranches(org: string, repo: string): Promise<BranchInfo[]> {
-  const data = await request<{ branches: BranchInfo[] }>(
-    `/api/v1/repos/${enc(org)}/${enc(repo)}/branches`,
+export async function fetchBookmarks(org: string, repo: string): Promise<BookmarkInfo[]> {
+  const data = await request<{ bookmarks: BookmarkInfo[] }>(
+    `/api/v1/repos/${enc(org)}/${enc(repo)}/bookmarks`,
   )
-  return data.branches ?? []
+  return data.bookmarks ?? []
 }
 
-export async function fetchTags(org: string, repo: string): Promise<BranchInfo[]> {
-  const data = await request<{ tags: BranchInfo[] }>(
+export async function fetchTags(org: string, repo: string): Promise<BookmarkInfo[]> {
+  const data = await request<{ tags: BookmarkInfo[] }>(
     `/api/v1/repos/${enc(org)}/${enc(repo)}/tags`,
   )
   return data.tags ?? []
@@ -118,11 +118,22 @@ export async function fetchChanges(org: string, repo: string, rev: string): Prom
   return data.changes ?? []
 }
 
-export async function fetchTree(org: string, repo: string, rev: string): Promise<TreeEntry[]> {
-  const data = await request<{ tree: TreeEntry[] }>(
-    `/api/v1/repos/${enc(org)}/${enc(repo)}/tree/${enc(rev)}`,
+export async function fetchContents(
+  org: string,
+  repo: string,
+  rev: string,
+  dir = '',
+): Promise<TreeEntry[]> {
+  const path = `${dir ? `/${dir}` : ''}?ref=${enc(rev)}`
+  const data = await request<{ entries: Array<Omit<TreeEntry, 'kind' | 'size'> & { type?: string; size?: number }> }>(
+    `/api/v1/repos/${enc(org)}/${enc(repo)}/contents${path}`,
   )
-  return data.tree ?? []
+  return (data.entries ?? []).map((e) => ({
+    path: e.path,
+    mode: e.mode,
+    kind: e.type ?? (e.kind ?? 'file'),
+    size: e.size ?? 0,
+  }))
 }
 
 
@@ -188,11 +199,11 @@ export async function fetchFileLog(
 export async function searchCode(
   org: string,
   repo: string,
-  branch: string,
+  bookmark: string,
   pattern: string,
 ): Promise<SearchHit[]> {
   const data = await request<{ matches: string[] }>(
-    `/api/v1/repos/${enc(org)}/${enc(repo)}/search?pattern=${enc(pattern)}&ref=${enc(branch)}`,
+    `/api/v1/repos/${enc(org)}/${enc(repo)}/search?pattern=${enc(pattern)}&ref=${enc(bookmark)}`,
   )
   return (data.matches ?? []).map((m) => {
     const i = m.indexOf(':')
@@ -213,12 +224,7 @@ export async function fetchConflicts(org: string, repo: string): Promise<Conflic
   return data.conflicts ?? []
 }
 
-export async function fetchBookmarks(org: string, repo: string): Promise<DbBookmark[]> {
-  const data = await request<{ bookmarks: DbBookmark[] }>(
-    `/api/v1/repos/${enc(org)}/${enc(repo)}/bookmarks`,
-  )
-  return data.bookmarks ?? []
-}
+
 
 // ── writes ──
 
@@ -226,7 +232,7 @@ export async function createRepo(org: string, repo: string): Promise<void> {
   await request(`/api/v1/repos/${enc(org)}/${enc(repo)}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ default_branch: 'main' }),
+    body: JSON.stringify({ default_bookmark: 'main' }),
   })
 }
 
@@ -237,7 +243,7 @@ export async function deleteRepo(org: string, repo: string): Promise<void> {
 export async function writeFile(
   org: string,
   repo: string,
-  branch: string,
+  bookmark: string,
   path: string,
   content: string,
   message: string,
@@ -246,14 +252,14 @@ export async function writeFile(
   return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/contents/${path}`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ content_base64: btoa(unescape(encodeURIComponent(content))), branch, message, amend }),
+    body: JSON.stringify({ content_base64: btoa(unescape(encodeURIComponent(content))), bookmark, message, amend }),
   })
 }
 
 export async function createFile(
   org: string,
   repo: string,
-  branch: string,
+  bookmark: string,
   path: string,
   content: string,
   message: string,
@@ -262,14 +268,14 @@ export async function createFile(
   return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/contents/${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ content_base64: btoa(unescape(encodeURIComponent(content))), branch, message, amend }),
+    body: JSON.stringify({ content_base64: btoa(unescape(encodeURIComponent(content))), bookmark, message, amend }),
   })
 }
 
 export async function deleteFile(
   org: string,
   repo: string,
-  branch: string,
+  bookmark: string,
   path: string,
   message: string,
   amend = true,
@@ -277,25 +283,25 @@ export async function deleteFile(
   return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/contents/${path}`, {
     method: 'DELETE',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ branch, message, amend }),
+    body: JSON.stringify({ bookmark, message, amend }),
   })
 }
 
-export async function createBranch(
+export async function createBookmark(
   org: string,
   repo: string,
   name: string,
   target: string,
 ): Promise<{ name: string; sha: string }> {
-  return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/branches/${enc(name)}`, {
+  return request(`/api/v1/repos/${enc(org)}/${enc(repo)}/bookmarks/${enc(name)}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ target }),
   })
 }
 
-export async function deleteBranch(org: string, repo: string, name: string): Promise<void> {
-  await request(`/api/v1/repos/${enc(org)}/${enc(repo)}/branches/${enc(name)}`, {
+export async function deleteBookmark(org: string, repo: string, name: string): Promise<void> {
+  await request(`/api/v1/repos/${enc(org)}/${enc(repo)}/bookmarks/${enc(name)}`, {
     method: 'DELETE',
   })
 }
@@ -323,12 +329,12 @@ export async function cloneRemote(
   org: string,
   repo: string,
   url: string,
-  branch?: string,
+  bookmark?: string,
 ): Promise<void> {
   await request(`/api/v1/repos/${enc(org)}/${enc(repo)}/sync/clone`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ url, branch: branch || undefined }),
+    body: JSON.stringify({ url, bookmark: bookmark || undefined }),
   })
 }
 

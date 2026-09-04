@@ -50,7 +50,7 @@ pub struct CommitInfo {
 
 #[derive(serde::Serialize)]
 #[derive(Debug)]
-pub struct BranchInfo {
+pub struct RefInfo {
     pub name: String,
     pub sha: String,
 }
@@ -231,30 +231,13 @@ pub async fn commit_by_sha(
 }
 
 /// List local bookmarks (git branches).
-pub async fn branches(
+pub async fn bookmarks(
     store: &Arc<RepoStore>,
     org: &str,
     repo: &str,
-) -> Result<Vec<BranchInfo>, RepoError> {
+) -> Result<Vec<RefInfo>, RepoError> {
     let repo = open(store, org, repo).await?;
-    Ok(list_branches(&repo))
-}
-
-/// List the tree at a commit (sha) — root if `sha` is empty.
-pub async fn tree_at_sha(
-    store: &Arc<RepoStore>,
-    org: &str,
-    repo: &str,
-    sha: &str,
-) -> Result<Vec<TreeEntryInfo>, RepoError> {
-    let repo = open(store, org, repo).await?;
-    let id = resolve_snapshot(&repo, sha)?;
-    let commit = repo
-        .store()
-        .get_commit(&id)
-        .map_err(|e| RepoError::Other(e.to_string()))?;
-    Ok(list_tree(&commit.tree(), ""))
-
+    Ok(list_bookmarks(&repo))
 }
 
 /// Resolve a rev: bookmark name, commit-id hex prefix, or change-id hex prefix.
@@ -386,13 +369,13 @@ pub fn commit_info(commit: &Commit) -> CommitInfo {
 }
 
 /// List local bookmarks (git branches) with their target commit sha.
-pub fn list_branches(repo: &ReadonlyRepo) -> Vec<BranchInfo> {
-    let mut out: Vec<BranchInfo> = repo
+pub fn list_bookmarks(repo: &ReadonlyRepo) -> Vec<RefInfo> {
+    let mut out: Vec<RefInfo> = repo
         .view()
         .local_bookmarks()
         .filter_map(|(name, target)| {
             let id = target.as_normal()?;
-            Some(BranchInfo {
+            Some(RefInfo {
                 name: name.as_str().to_string(),
                 sha: id.hex(),
             })
@@ -558,8 +541,8 @@ pub async fn commit_log(
     rev: Option<&str>,
     since: Option<i64>,
     until: Option<i64>,
-    page: usize,
-    page_size: usize,
+    offset: usize,
+    limit: usize,
 ) -> Result<(Vec<CommitInfo>, usize), RepoError> {
     let repo = open(store, org, repo).await?;
     // Walk from the rev's commit when given, otherwise from every bookmark tip.
@@ -603,11 +586,10 @@ pub async fn commit_log(
     }
     commits.sort_by_key(|c| std::cmp::Reverse(c.committer().timestamp.timestamp));
     let total = commits.len();
-    let start = page.saturating_mul(page_size);
     let page_items: Vec<CommitInfo> = commits
         .into_iter()
-        .skip(start)
-        .take(page_size)
+        .skip(offset)
+        .take(limit)
         .map(|c| commit_info(&c))
         .collect();
     Ok((page_items, total))
@@ -793,14 +775,14 @@ pub async fn tags(
     store: &Arc<RepoStore>,
     org: &str,
     repo: &str,
-) -> Result<Vec<BranchInfo>, RepoError> {
+) -> Result<Vec<RefInfo>, RepoError> {
     let repo = open(store, org, repo).await?;
-    let mut out: Vec<BranchInfo> = repo
+    let mut out: Vec<RefInfo> = repo
         .view()
         .local_tags()
         .filter_map(|(name, target)| {
             let id = target.as_normal()?;
-            Some(BranchInfo {
+            Some(RefInfo {
                 name: name.as_str().to_string(),
                 sha: id.hex(),
             })
@@ -1139,7 +1121,10 @@ pub async fn search_code(
     let repo = open(store, org, repo).await?;
     let id = resolve_revset_single(&repo, rev)?;
     let commit = repo.store().get_commit(&id).map_err(|e| RepoError::Other(e.to_string()))?;
-    // Walk the tree and line-grep each file (bounded, no index yet).
+    // Compile the pattern as a real regular expression; an invalid regex is an
+    // error, not a silent literal. Each line is matched against the regex.
+    let re = regex::Regex::new(pattern).map_err(|e| RepoError::Invalid(format!("invalid search pattern: {e}")))?;
+    // Walk the tree and line-regex each file (bounded, no index yet).
     let mut out = Vec::new();
     let tree = commit.tree();
     for (path_buf, value_res) in tree.entries() {
@@ -1153,7 +1138,7 @@ pub async fn search_code(
         };
         let text = String::from_utf8_lossy(&bytes);
         for (i, line) in text.lines().enumerate() {
-            if line.contains(pattern) {
+            if re.is_match(line) {
                 out.push(format!("{path}:{}:{line}", i + 1));
             }
         }
@@ -1297,13 +1282,13 @@ pub async fn contents_dir_at(
 }
 
 /// All local bookmark tips as (name, sha).
-pub async fn branch_tips(
+pub async fn bookmark_tips(
     store: &Arc<RepoStore>,
     org: &str,
     repo: &str,
 ) -> Result<Vec<(String, String)>, RepoError> {
     let repo = open(store, org, repo).await?;
-    Ok(list_branches(&repo)
+    Ok(list_bookmarks(&repo)
         .into_iter()
         .map(|b| (b.name, b.sha))
         .collect())

@@ -89,7 +89,7 @@ pub struct RebaseOutcome {
 /// dest bookmark. jj-native: the rebase never "stops" on conflicts — conflicts
 /// are carried as first-class tree conflicts in the resulting commit and
 /// reported as paths.
-pub async fn rebase_branch(
+pub async fn rebase_bookmark(
     store: &Arc<RepoStore>,
     db: &Db,
     org: &str,
@@ -169,18 +169,18 @@ pub async fn create_repo(
     db: &Db,
     org: &str,
     repo: &str,
-    default_branch: &str,
+    default_bookmark: &str,
     author: (String, String),
 ) -> Result<(), RepoError> {
     jjlab_core::validate_segment(org, "org").map_err(RepoError::Invalid)?;
     jjlab_core::validate_segment(repo, "repo").map_err(RepoError::Invalid)?;
-    jjlab_core::validate_ref_name(default_branch, "branch").map_err(RepoError::Invalid)?;
+    jjlab_core::validate_ref_name(default_bookmark, "bookmark").map_err(RepoError::Invalid)?;
     if store.exists(org, repo) {
         return Err(RepoError::Conflict(format!("repository {org}/{repo} already exists")));
     }
     db.upsert_org(org, org)
         .map_err(|e| RepoError::Other(e.to_string()))?;
-    db.upsert_repo(&format!("{org}/{repo}"), org, repo, default_branch, None)
+    db.upsert_repo(&format!("{org}/{repo}"), org, repo, default_bookmark, None)
         .map_err(|e| RepoError::Other(e.to_string()))?;
     let handle = store.open_or_init(org, repo).await?;
     let signature = jj_lib::backend::Signature {
@@ -226,7 +226,7 @@ pub async fn create_repo(
                 .await
                 .map_err(|e| RepoError::Other(format!("write commit: {e}")))?;
 
-            let name: jj_lib::ref_name::RefNameBuf = default_branch.to_string().into();
+            let name: jj_lib::ref_name::RefNameBuf = default_bookmark.to_string().into();
             mut_repo.set_local_bookmark_target(
                 &name,
                 jj_lib::op_store::RefTarget::normal(commit.id().clone()),
@@ -262,7 +262,7 @@ pub async fn delete_repo(store: &Arc<RepoStore>, org: &str, repo: &str) -> Resul
 /// Move a bookmark (git branch) to a snapshot or change-id view. `target`
 /// (snapshot: sha/bookmark/tag) and `change` (change-id) are mutually
 /// exclusive; exactly one must be non-empty.
-pub async fn set_branch(
+pub async fn set_bookmark(
     store: &Arc<RepoStore>,
     db: &Db,
     org: &str,
@@ -271,7 +271,7 @@ pub async fn set_branch(
     target: &str,
     change: &str,
 ) -> Result<String, RepoError> {
-    jjlab_core::validate_ref_name(name, "branch").map_err(RepoError::Invalid)?;
+    jjlab_core::validate_ref_name(name, "bookmark").map_err(RepoError::Invalid)?;
     let handle = store.open(org, repo).await?;
     let commit_id = pollster::block_on(async {
         let repo_arc = handle.repo.clone();
@@ -299,14 +299,14 @@ pub async fn set_branch(
 }
 
 /// Delete a bookmark.
-pub async fn delete_branch(
+pub async fn delete_bookmark(
     store: &Arc<RepoStore>,
     db: &Db,
     org: &str,
     repo: &str,
     name: &str,
 ) -> Result<(), RepoError> {
-    jjlab_core::validate_ref_name(name, "branch").map_err(RepoError::Invalid)?;
+    jjlab_core::validate_ref_name(name, "bookmark").map_err(RepoError::Invalid)?;
     let handle = store.open(org, repo).await?;
     pollster::block_on(async {
         let mut tx = handle.repo.start_transaction();
@@ -391,7 +391,7 @@ pub struct EditOutcome {
 }
 
 /// Atomically apply a mixed set of create/update/delete actions as ONE change
-/// on top of `branch`'s head (the unified write path, GitLab commits style).
+/// on top of `bookmark`'s head (the unified write path, GitLab commits style).
 /// Every action's base blob sha is validated up front; a mismatch on ANY
 /// action rejects the WHOLE commit (409) before anything is written. Writes
 /// and deletions are combined into a single `MergedTreeBuilder` → one commit →
@@ -402,14 +402,14 @@ pub async fn commit_edits(
     db: &Db,
     org: &str,
     repo: &str,
-    branch: &str,
+    bookmark: &str,
     writes: &[BatchEdit],
     deletes: &[BatchDelete],
     message: &str,
     author: (String, String),
     amend: bool,
 ) -> Result<EditOutcome, RepoError> {
-    jjlab_core::validate_ref_name(branch, "branch").map_err(RepoError::Invalid)?;
+    jjlab_core::validate_ref_name(bookmark, "bookmark").map_err(RepoError::Invalid)?;
     if writes.is_empty() && deletes.is_empty() {
         return Err(RepoError::Invalid("commit contains no actions".into()));
     }
@@ -420,7 +420,7 @@ pub async fn commit_edits(
         timestamp: jj_lib::backend::Timestamp::now(),
     };
     let repo_arc = handle.repo.clone();
-    let base = pollster::block_on(async { crate::read::resolve_snapshot(&repo_arc, branch) })?;
+    let base = pollster::block_on(async { crate::read::resolve_snapshot(&repo_arc, bookmark) })?;
 
     let outcome = pollster::block_on(async {
         let mut tx = handle.repo.start_transaction();
@@ -496,7 +496,7 @@ pub async fn commit_edits(
                     .write()
                     .await
                     .map_err(|e| RepoError::Other(format!("write commit: {e}")))?;
-                let target: jj_lib::ref_name::RefNameBuf = branch.to_string().into();
+                let target: jj_lib::ref_name::RefNameBuf = bookmark.to_string().into();
                 mut_repo.set_local_bookmark_target(
                     &target,
                     jj_lib::op_store::RefTarget::normal(commit.id().clone()),
@@ -537,7 +537,7 @@ fn hasWorkflowWrite(writes: &[BatchEdit]) -> bool {
 }
 
 /// Atomically write (create/update) several files as one change on top of
-/// `branch`'s head. `edits` carries per-file content + an optional optimistic
+/// `bookmark`'s head. `edits` carries per-file content + an optional optimistic
 /// base blob sha. Every edit's base sha is validated up front; a mismatch on
 /// ANY file rejects the WHOLE batch with a Conflict before anything is written.
 /// The files land in a single `MergedTreeBuilder`, produce one commit, and one
@@ -548,13 +548,13 @@ pub async fn write_files(
     db: &Db,
     org: &str,
     repo: &str,
-    branch: &str,
+    bookmark: &str,
     edits: &[BatchEdit],
     message: &str,
     author: (String, String),
     amend: bool,
 ) -> Result<EditOutcome, RepoError> {
-    jjlab_core::validate_ref_name(branch, "branch").map_err(RepoError::Invalid)?;
+    jjlab_core::validate_ref_name(bookmark, "bookmark").map_err(RepoError::Invalid)?;
     if edits.is_empty() {
         return Err(RepoError::Invalid("batch contains no files".into()));
     }
@@ -565,7 +565,7 @@ pub async fn write_files(
         timestamp: jj_lib::backend::Timestamp::now(),
     };
     let repo_arc = handle.repo.clone();
-    let base = pollster::block_on(async { crate::read::resolve_snapshot(&repo_arc, branch) })?;
+    let base = pollster::block_on(async { crate::read::resolve_snapshot(&repo_arc, bookmark) })?;
 
     let outcome = pollster::block_on(async {
         let mut tx = handle.repo.start_transaction();
@@ -635,7 +635,7 @@ pub async fn write_files(
                     .write()
                     .await
                     .map_err(|e| RepoError::Other(format!("write commit: {e}")))?;
-                let target: jj_lib::ref_name::RefNameBuf = branch.to_string().into();
+                let target: jj_lib::ref_name::RefNameBuf = bookmark.to_string().into();
                 mut_repo.set_local_bookmark_target(
                     &target,
                     jj_lib::op_store::RefTarget::normal(commit.id().clone()),
@@ -658,7 +658,7 @@ pub async fn write_files(
     Ok(outcome)
 }
 
-/// Atomically delete several files as one change on top of `branch`'s head.
+/// Atomically delete several files as one change on top of `bookmark`'s head.
 /// Every delete's base blob sha is validated up front; a mismatch on ANY file
 /// rejects the WHOLE batch (409) before anything is removed. All removals land
 /// in a single `MergedTreeBuilder`, produce one commit, and one change id.
@@ -668,13 +668,13 @@ pub async fn delete_files(
     db: &Db,
     org: &str,
     repo: &str,
-    branch: &str,
+    bookmark: &str,
     deletes: &[BatchDelete],
     message: &str,
     author: (String, String),
     amend: bool,
 ) -> Result<EditOutcome, RepoError> {
-    jjlab_core::validate_ref_name(branch, "branch").map_err(RepoError::Invalid)?;
+    jjlab_core::validate_ref_name(bookmark, "bookmark").map_err(RepoError::Invalid)?;
     if deletes.is_empty() {
         return Err(RepoError::Invalid("batch contains no files".into()));
     }
@@ -685,7 +685,7 @@ pub async fn delete_files(
         timestamp: jj_lib::backend::Timestamp::now(),
     };
     let repo_arc = handle.repo.clone();
-    let base = pollster::block_on(async { crate::read::resolve_snapshot(&repo_arc, branch) })?;
+    let base = pollster::block_on(async { crate::read::resolve_snapshot(&repo_arc, bookmark) })?;
 
     let outcome = pollster::block_on(async {
         let mut tx = handle.repo.start_transaction();
@@ -734,7 +734,7 @@ pub async fn delete_files(
                     .write()
                     .await
                     .map_err(|e| RepoError::Other(format!("write commit: {e}")))?;
-                let target: jj_lib::ref_name::RefNameBuf = branch.to_string().into();
+                let target: jj_lib::ref_name::RefNameBuf = bookmark.to_string().into();
                 mut_repo.set_local_bookmark_target(
                     &target,
                     jj_lib::op_store::RefTarget::normal(commit.id().clone()),

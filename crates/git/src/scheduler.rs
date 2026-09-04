@@ -408,10 +408,10 @@ async fn default_head(
 ) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
         pollster::block_on(async {
-            let branches = crate::read::branches(&store, &org, &repo)
+            let bookmarks = crate::read::bookmarks(&store, &org, &repo)
                 .await
                 .map_err(|e| e.to_string())?;
-            branches
+            bookmarks
                 .into_iter()
                 .find(|b| b.name == bookmark)
                 .map(|b| b.sha)
