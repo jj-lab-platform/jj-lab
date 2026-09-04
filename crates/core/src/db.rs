@@ -171,15 +171,21 @@ impl Db {
                 tracing::info!("db migration: workflows.cron added");
             }
         }
-        // Schema drift migration: the `bookmarks` table previously carried a
-        // `change_id NOT NULL` column that the current schema dropped (a
-        // bookmark now only records its name + remote flag). A pre-existing DB
-        // still has the column, so an upsert that omits change_id fails the
-        // NOT NULL constraint. Detect the column via PRAGMA table_info and
-        // rebuild the table to the new shape when present (idempotent on a DB
-        // that never had it, or already migrated). Rebuild (not DROP COLUMN)
-        // so it does not depend on the SQLite 3.35+ DROP COLUMN feature.
+        {
+            let conn = pool
+                .get()
+                .map_err(|e| Error::Db(format!("db get: {e}")))?;
+            conn.execute_batch(SCHEMA)
+                .map_err(|e| Error::Db(format!("db schema: {e}")))?;
+        }
+        // Schema drift migrations (must run AFTER SCHEMA so the reference
+        // tables exist; SCHEMA's CREATE TABLE IF NOT EXISTS no-ops on the old
+        // shapes, leaving them to be repaired here):
+        //   1. bookmarks      — drop the legacy change_id column.
+        //   2. merge_requests — add the head_bookmark column.
         if let Some(conn) = conn_migrate(&pool).ok() {
+            // 1. bookmarks: a legacy NOT NULL change_id column breaks upserts
+            // that omit it. Rebuild the table without it (idempotent).
             let has_change_id = {
                 let mut info = conn
                     .prepare("PRAGMA table_info(bookmarks)")
@@ -211,13 +217,27 @@ impl Db {
                 .map_err(|e| Error::Db(format!("bookmarks migrate: {e}")))?;
                 tracing::info!("db migration: bookmarks.change_id dropped (rebuild)");
             }
-        }
-        {
-            let conn = pool
-                .get()
-                .map_err(|e| Error::Db(format!("db get: {e}")))?;
-            conn.execute_batch(SCHEMA)
-                .map_err(|e| Error::Db(format!("db schema: {e}")))?;
+            // 2. merge_requests: add head_bookmark if a legacy table lacks it.
+            let has_head_bookmark = {
+                let mut info = conn
+                    .prepare("PRAGMA table_info(merge_requests)")
+                    .map_err(|e| Error::Db(format!("merge_requests table_info prepare: {e}")))?;
+                let rows = info
+                    .query_map([], |r| r.get::<_, String>(1))
+                    .map_err(|e| Error::Db(format!("merge_requests table_info query: {e}")))?;
+                let mut found = false;
+                for r in rows {
+                    if (r.map_err(|e| Error::Db(format!("table_info row: {e}")))?) == "head_bookmark" {
+                        found = true;
+                    }
+                }
+                found
+            };
+            if !has_head_bookmark {
+                conn.execute_batch("ALTER TABLE merge_requests ADD COLUMN head_bookmark TEXT")
+                    .map_err(|e| Error::Db(format!("merge_requests add head_bookmark: {e}")))?;
+                tracing::info!("db migration: merge_requests.head_bookmark added");
+            }
         }
         Ok(Self { pool: Arc::new(pool) })
     }
