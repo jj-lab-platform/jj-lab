@@ -171,6 +171,47 @@ impl Db {
                 tracing::info!("db migration: workflows.cron added");
             }
         }
+        // Schema drift migration: the `bookmarks` table previously carried a
+        // `change_id NOT NULL` column that the current schema dropped (a
+        // bookmark now only records its name + remote flag). A pre-existing DB
+        // still has the column, so an upsert that omits change_id fails the
+        // NOT NULL constraint. Detect the column via PRAGMA table_info and
+        // rebuild the table to the new shape when present (idempotent on a DB
+        // that never had it, or already migrated). Rebuild (not DROP COLUMN)
+        // so it does not depend on the SQLite 3.35+ DROP COLUMN feature.
+        if let Some(conn) = conn_migrate(&pool).ok() {
+            let has_change_id = {
+                let mut info = conn
+                    .prepare("PRAGMA table_info(bookmarks)")
+                    .map_err(|e| Error::Db(format!("bookmarks table_info prepare: {e}")))?;
+                let rows = info
+                    .query_map([], |r| r.get::<_, String>(1))
+                    .map_err(|e| Error::Db(format!("bookmarks table_info query: {e}")))?;
+                let mut found = false;
+                for r in rows {
+                    if (r.map_err(|e| Error::Db(format!("table_info row: {e}")))?) == "change_id" {
+                        found = true;
+                    }
+                }
+                found
+            };
+            if has_change_id {
+                conn.execute_batch(
+                    "ALTER TABLE bookmarks RENAME TO bookmarks_old; \
+                     CREATE TABLE bookmarks ( \
+                         repo_id TEXT NOT NULL REFERENCES repos(id) ON UPDATE CASCADE, \
+                         name TEXT NOT NULL, \
+                         is_remote INTEGER NOT NULL DEFAULT 0, \
+                         PRIMARY KEY (repo_id, name) \
+                     ); \
+                     INSERT INTO bookmarks (repo_id, name, is_remote) \
+                         SELECT repo_id, name, is_remote FROM bookmarks_old; \
+                     DROP TABLE bookmarks_old;",
+                )
+                .map_err(|e| Error::Db(format!("bookmarks migrate: {e}")))?;
+                tracing::info!("db migration: bookmarks.change_id dropped (rebuild)");
+            }
+        }
         {
             let conn = pool
                 .get()
@@ -1498,6 +1539,28 @@ mod tests {
         Db::open(&path).unwrap();
         // Second open is a no-op (SCHEMA is CREATE TABLE IF NOT EXISTS).
         Db::open(&path).unwrap();
+    }
+    #[test]
+    fn migrate_bookmarks() {
+        // Simulate a pre-migration DB whose bookmarks table still has a
+        // NOT NULL change_id column. Db::open must detect it and rebuild the
+        // table to the new shape so upserts that omit change_id succeed.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mig.db");
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE repos (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, name TEXT NOT NULL, default_bookmark TEXT NOT NULL, git_url TEXT);                  CREATE TABLE bookmarks (repo_id TEXT NOT NULL, name TEXT NOT NULL, change_id TEXT NOT NULL, is_remote INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (repo_id, name));",
+            ).unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let repo_id = String::from("org/repo");
+        db.upsert_org("org", "org").unwrap();
+        db.upsert_repo(&repo_id, "org", "repo", "main", None).unwrap();
+        // Must NOT fail with "NOT NULL constraint failed: bookmarks.change_id".
+        db.upsert_bookmark(&repo_id, "main", false).unwrap();
+        let b = db.get_bookmark(&repo_id, "main").unwrap();
+        assert_eq!(b, Some(false));
     }
 
     // ── MR lifecycle ──
