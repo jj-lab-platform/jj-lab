@@ -518,6 +518,13 @@ pub struct ServiceStatus {
 }
 
 impl ServiceStatus {
+    /// The `zergx/session` annotation value, if present.
+    pub fn session(&self) -> Option<&str> {
+        self.annotations.get("zergx/session").map(|s| s.as_str())
+    }
+}
+
+impl ServiceStatus {
     /// `http://<pod-ip>:<first-container-port>`; the port is inferred from
     /// kind-specific knowledge the caller has (worker sandbox = 48080), so
     /// this is provided by the handler layer, not here.

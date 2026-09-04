@@ -261,6 +261,7 @@ pub async fn ops_service_get(
             let body = json!({
                 "name": s.name, "kind": s.kind, "replicas": s.replicas,
                 "ready": s.ready, "phase": s.phase, "pod_ip": s.pod_ip,
+                "annotations": s.annotations,
                 "worker_url": s.worker_url_on(port),
             });
             Json(body).into_response()
