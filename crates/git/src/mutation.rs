@@ -308,6 +308,20 @@ pub async fn delete_bookmark(
 ) -> Result<(), RepoError> {
     jjlab_core::validate_ref_name(name, "bookmark").map_err(RepoError::Invalid)?;
     let handle = store.open(org, repo).await?;
+    // Guard: a repo must never be left without a single bookmark (branch). An
+    // empty repo (no default branch) breaks git clients, the reconciler and
+    // the pull-through/export paths. Reject deleting the last bookmark.
+    let existing: Vec<String> = handle
+        .repo
+        .view()
+        .local_bookmarks()
+        .filter_map(|(n, t)| t.as_normal().map(|_| n.as_str().to_string()))
+        .collect();
+    if existing.len() <= 1 && existing.iter().any(|n| n == name) {
+        return Err(RepoError::Invalid(format!(
+            "cannot delete bookmark '{name}': a repository must keep at least one bookmark"
+        )));
+    }
     pollster::block_on(async {
         let mut tx = handle.repo.start_transaction();
         {

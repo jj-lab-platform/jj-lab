@@ -297,3 +297,26 @@ async fn force_push_reassociates_open_mr_head() {
         "MR head must follow force-pushed bookmark tip"
     );
 }
+
+#[tokio::test]
+async fn delete_bookmark_refuses_to_remove_last_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (store, db, _url) = seed_remote(tmp.path());
+    jjlab_git::mutation::create_repo(&store, &db, "o2", "r2", "main", author())
+        .await
+        .expect("create_repo");
+
+    // Repo has exactly one local bookmark: main. Deleting it must be rejected
+    // so a repo is never left without a branch.
+    let err = jjlab_git::mutation::delete_bookmark(&store, &db, "o2", "r2", "main")
+        .await
+        .expect_err("deleting the last bookmark must fail");
+    assert!(
+        format!("{err:?}").contains("at least one bookmark"),
+        "unexpected error: {err:?}"
+    );
+
+    // main still present.
+    let bookmarks = jjlab_git::read::bookmarks(&store, "o2", "r2").await.unwrap();
+    assert!(bookmarks.iter().any(|b| b.name == "main"));
+}
